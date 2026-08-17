@@ -6,276 +6,317 @@
 <title>Что на меня влияет — заявка Sber500 x Disrupt</title>
 <style>
   :root {
-    --bg:#FFFFFF; --bg-soft:#F4F7FC; --bg-tint:#FAFBFD;
-    --ink:#101418; --ink-2:#2C333B; --muted:#6A7480;
-    --line:#E4E8ED; --line-2:#CFD6DE;
-    --acc:#1F5FD8; --acc-soft:#E7EFFD; --acc-mark:#CFE0FF;
-    --ok:#14795A; --ok-soft:#DDF1E9; --wait:#8A5F10; --wait-soft:#F7EDD9;
-    --stop:#A5372F; --stop-soft:#F8E4E2;
-    --mono: ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
-    --sans: system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+    --paper: #FFFFFF;
+    --ink: #1A1A1A;
+    --text: #4B4F52;
+    --soft: #8A8F93;
+    --line: #E6E8E9;
+    --green: #1F8A5B;
+    --green-soft: #EAF5F0;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
   }
-  @media (prefers-color-scheme: dark) {
-    :root:not([data-theme="light"]) {
-      --bg:#0D1116; --bg-soft:#151B24; --bg-tint:#12171E;
-      --ink:#EAEEF3; --ink-2:#C6CED8; --muted:#98A3B1;
-      --line:#242C36; --line-2:#35404C;
-      --acc:#74A2F5; --acc-soft:#16233A; --acc-mark:#23385C;
-      --ok:#4FB78C; --ok-soft:#122B21; --wait:#D6A44A; --wait-soft:#2F2410;
-      --stop:#E17E74; --stop-soft:#331A18;
-    }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 18px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
   }
-  :root[data-theme="dark"] {
-    --bg:#0D1116; --bg-soft:#151B24; --bg-tint:#12171E;
-    --ink:#EAEEF3; --ink-2:#C6CED8; --muted:#98A3B1;
-    --line:#242C36; --line-2:#35404C;
-    --acc:#74A2F5; --acc-soft:#16233A; --acc-mark:#23385C;
-    --ok:#4FB78C; --ok-soft:#122B21; --wait:#D6A44A; --wait-soft:#2F2410;
-    --stop:#E17E74; --stop-soft:#331A18;
+
+  .slide {
+    min-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: clamp(48px, 8vh, 96px) clamp(24px, 7vw, 120px);
+    max-width: 1240px;
+    margin-inline: auto;
+    border-bottom: 1px solid var(--line);
   }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--ink); font-family:var(--sans); font-size:16px; line-height:1.6; -webkit-font-smoothing:antialiased; }
-  .wrap { max-width:1080px; margin-inline:auto; padding-inline:clamp(18px,4vw,44px); }
-  section { padding-block:clamp(42px,6vw,78px); border-top:1px solid var(--line); }
-  section:first-of-type { border-top:0; }
-  h1 { font-size:clamp(30px,4.6vw,52px); line-height:1.05; letter-spacing:-0.035em; font-weight:600; margin:0 0 18px; max-width:18ch; text-wrap:balance; }
-  h1 mark { background:linear-gradient(transparent 62%, var(--acc-mark) 62%); color:inherit; }
-  h2 { font-size:clamp(22px,2.9vw,32px); line-height:1.13; letter-spacing:-0.03em; font-weight:600; margin:0; max-width:22ch; text-wrap:balance; }
-  h3 { font-size:17px; font-weight:600; margin:0; letter-spacing:-0.01em; }
-  h4 { margin:0; font-family:var(--mono); font-size:10.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--muted); font-weight:500; }
-  p { margin:0; max-width:64ch; }
-  .lede { font-size:clamp(16px,1.8vw,19px); color:var(--muted); line-height:1.55; }
-  .sec-head { display:flex; flex-direction:column; gap:12px; margin-bottom:28px; }
-  .badge { display:inline-flex; align-items:center; gap:9px; font-size:13px; color:var(--muted); margin-bottom:24px; }
-  .badge i { width:8px; height:8px; border-radius:50%; background:var(--acc); flex:none; }
-  a { color:var(--acc); }
+  .slide:last-of-type { border-bottom: 0; }
+  .inner { max-width: 820px; }
+  .wide { max-width: 1000px; }
 
-  .hero { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,330px); gap:clamp(24px,4vw,52px); align-items:start; }
-  @media (max-width:880px){ .hero { grid-template-columns:1fr; } }
+  .eyebrow {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    margin: 0 0 26px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+    color: var(--green);
+  }
+  .eyebrow i { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex: none; }
+  .eyebrow em { font-style: normal; color: var(--soft); font-weight: 600; letter-spacing: 0.1em; }
 
-  .card { border:1px solid var(--line); border-radius:12px; overflow:hidden; background:var(--bg); }
-  .card-h { padding:10px 15px; background:var(--bg-soft); color:var(--muted); font-family:var(--mono); font-size:10.5px; letter-spacing:.13em; text-transform:uppercase; }
-  .card-b { padding:15px; display:flex; flex-direction:column; gap:9px; }
-  .m { font-size:13.5px; line-height:1.4; padding:9px 13px; border-radius:13px; background:var(--bg-soft); max-width:92%; }
-  .m.me { align-self:flex-end; background:var(--acc); color:#fff; }
-  :root[data-theme="dark"] .m.me { color:#0D1116; }
-  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .m.me { color:#0D1116; } }
-  .m.ok { border:1px solid var(--ok); color:var(--ok); background:transparent; }
+  h1 {
+    font-size: clamp(34px, 5.2vw, 60px);
+    line-height: 1.08;
+    letter-spacing: -0.02em;
+    font-weight: 800;
+    margin: 0 0 26px;
+    max-width: 16ch;
+    text-wrap: balance;
+  }
+  h2 { font-size: 20px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em; }
+  p { margin: 0 0 20px; color: var(--text); max-width: 60ch; }
+  p:last-child { margin-bottom: 0; }
+  p.big { font-size: clamp(19px, 2vw, 23px); color: var(--text); line-height: 1.5; }
+  strong { color: var(--ink); font-weight: 700; }
 
-  .hyp { border:1px solid var(--line); border-radius:12px; overflow:hidden; }
-  .hyp-top { padding:18px 22px; background:var(--bg-soft); display:flex; justify-content:space-between; gap:14px; flex-wrap:wrap; align-items:baseline; }
-  .hyp-top b { font-size:20px; letter-spacing:-0.02em; }
-  .hyp-top span { font-family:var(--mono); font-size:11px; letter-spacing:.1em; color:var(--muted); }
-  .hyp-row { display:grid; grid-template-columns:112px minmax(0,1fr); gap:18px; padding:18px 22px; border-top:1px solid var(--line); }
-  @media (max-width:640px){ .hyp-row { grid-template-columns:1fr; gap:6px; } }
-  .hyp-row dt { font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
-  .hyp-row dd { margin:0; }
+  .nums {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    gap: clamp(24px, 4vw, 56px);
+    margin-top: 44px;
+  }
+  .nums b { display: block; font-size: clamp(38px, 5vw, 58px); line-height: 1; font-weight: 800; letter-spacing: -0.03em; }
+  .nums span { display: block; margin-top: 12px; font-size: 15px; color: var(--text); line-height: 1.45; }
+  .nums u { display: block; text-decoration: none; margin-top: 6px; font-size: 13px; color: var(--soft); }
 
-  .table-scroll { overflow-x:auto; border:1px solid var(--line); border-radius:9px; }
-  table.data { border-collapse:collapse; width:100%; min-width:560px; background:var(--bg); }
-  table.data th, table.data td { text-align:left; padding:11px 15px; border-bottom:1px solid var(--line); vertical-align:top; }
-  table.data thead th { font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); font-weight:500; background:var(--bg-tint); white-space:nowrap; }
-  table.data tbody tr:last-child td { border-bottom:0; }
-  table.data td.r { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
-  table.data tfoot td { padding:12px 15px; font-weight:600; background:var(--bg-soft); border-top:2px solid var(--line-2); }
+  .steps { display: flex; flex-direction: column; gap: 26px; margin-top: 36px; }
+  .step { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 20px; align-items: start; }
+  .step em { font-style: normal; font-size: 15px; font-weight: 700; color: var(--green); padding-top: 3px; }
+  .step p { margin: 0; font-size: 16px; }
 
-  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:16px; }
-  .tile { border:1px solid var(--line); border-radius:10px; padding:17px 19px; display:flex; flex-direction:column; gap:7px; }
-  .tile p { font-size:14px; color:var(--muted); }
-  .tile.soft { background:var(--bg-soft); border-color:transparent; }
-  .stat { display:flex; gap:28px; flex-wrap:wrap; margin-top:26px; padding-top:20px; border-top:1px solid var(--line); }
-  .stat b { display:block; font-size:24px; letter-spacing:-0.02em; line-height:1.2; }
-  .stat span { font-size:13px; color:var(--muted); }
-  .chip { display:inline-block; font-family:var(--mono); font-size:11px; padding:2px 9px; border-radius:999px; white-space:nowrap; }
-  .chip.ok { background:var(--ok-soft); color:var(--ok); }
-  .chip.wait { background:var(--wait-soft); color:var(--wait); }
-  .chip.acc { background:var(--acc-soft); color:var(--acc); }
-  .chip.stop { background:var(--stop-soft); color:var(--stop); }
-  pre { margin:0; padding:15px; background:var(--bg-soft); border-radius:9px; overflow-x:auto; font-family:var(--mono); font-size:12.5px; line-height:1.55; color:var(--ink-2); }
-  ul.plain { margin:0; padding-left:18px; display:flex; flex-direction:column; gap:8px; font-size:15px; color:var(--muted); }
-  ul.plain b { color:var(--ink); font-weight:600; }
-  .weeks { display:grid; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); gap:12px; }
-  .week { border:1px solid var(--line); border-radius:9px; padding:13px 15px; display:flex; flex-direction:column; gap:4px; }
-  .week em { font-style:normal; font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; color:var(--acc); }
-  .week span { font-size:13.5px; color:var(--muted); }
-  .week b { font-size:14.5px; }
-  footer { border-top:1px solid var(--line); padding:22px 0 58px; font-family:var(--mono); font-size:11.5px; letter-spacing:.06em; color:var(--muted); display:flex; justify-content:space-between; gap:16px; flex-wrap:wrap; }
+  .rows { margin-top: 34px; border-top: 1px solid var(--line); }
+  .row { display: grid; grid-template-columns: 250px minmax(0, 1fr) 92px; gap: 22px; padding: 15px 0; border-bottom: 1px solid var(--line); align-items: baseline; }
+  .row b { font-weight: 700; font-size: 16px; }
+  .row span { color: var(--text); font-size: 15.5px; }
+  .row u { text-decoration: none; text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .row.total { border-bottom: 0; padding-top: 20px; }
+  .row.total b, .row.total u { font-size: 19px; }
+  @media (max-width: 760px) {
+    .row { grid-template-columns: 1fr 76px; }
+    .row span { grid-column: 1 / -1; }
+  }
 
-@media print { section { break-inside: avoid; } }
+  .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: clamp(24px, 4vw, 52px); margin-top: 36px; }
+  .two p { font-size: 16px; margin: 0; }
+
+  pre {
+    margin: 34px 0 0;
+    padding: 22px 24px;
+    background: #F7F8F8;
+    border-left: 3px solid var(--green);
+    overflow-x: auto;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 13.5px;
+    line-height: 1.65;
+    color: #3A3F42;
+  }
+  .quiet { color: var(--soft); }
+  .mark { background: var(--green-soft); padding: 0 4px; }
+
+  .weeks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 22px 32px; margin-top: 36px; }
+  .week em { font-style: normal; display: block; font-size: 13px; font-weight: 700; color: var(--green); letter-spacing: 0.06em; margin-bottom: 5px; }
+  .week b { display: block; font-size: 16px; margin-bottom: 3px; }
+  .week span { font-size: 14px; color: var(--text); line-height: 1.45; }
+
+  .links { margin-top: 40px; display: flex; flex-direction: column; gap: 10px; font-size: 16px; }
+  .links a { color: var(--green); font-weight: 600; }
+
+  @media print {
+    .slide { min-height: auto; break-after: page; border-bottom: 0; padding-block: 40px; }
+  }
+
 </style>
 </head>
 <body>
-<div class="wrap">
+<!-- 01 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner">
+    <p class="eyebrow"><i></i>Что это и зачем <em>· 01</em></p>
+    <h1>Что на меня влияет</h1>
+    <p class="big">Человек рассказывает про свой день обычными словами. Мы понимаем, что он делал
+      и как себя чувствовал, добавляем данные с кольца, находим повторы и предлагаем проверить их
+      на нём самом.</p>
+    <p>Заявка на Sber500 x Disrupt. Трек «Разработаю продукт с нуля», своя гипотеза,
+      направление Health &amp; Habits.</p>
+  </div>
+</section>
 
-  <section>
-    <div class="badge"><i></i>Заявка на Sber500 x Disrupt · трек «Разработаю продукт с нуля» · своя гипотеза</div>
-    <div class="hero">
+<!-- 02 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner">
+    <p class="eyebrow"><i></i>Проблема <em>· 02</em></p>
+    <h1>Плохо спал — а почему, непонятно</h1>
+    <p class="big">Самочувствие скачет: сон, тревога, энергия, голова. Причину человек назвать
+      не может, хотя данных вокруг него хватает.</p>
+    <p>Кольцо знает пульс и сон. Календарь знает встречи. Про тяжёлый вчерашний разговор
+      не знает никто. Поэтому советы получаются общие, вроде «спите восемь часов».</p>
+    <p>Дневник мог бы дать ответ. Но его бросают через неделю: писать долго, а толку не видно.</p>
+  </div>
+</section>
+
+<!-- 03 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner wide">
+    <p class="eyebrow"><i></i>Как это работает <em>· 03</em></p>
+    <h1>Рассказал — получил вывод о себе</h1>
+    <div class="steps">
+      <div class="step"><em>01</em>
+        <div><h2>Человек говорит, а не заполняет</h2>
+        <p>Голосом или текстом, тридцать секунд. «Опять кофе в пять вечера, спал часов пять,
+          с утра тревога». Никаких галочек и шкал.</p></div></div>
+      <div class="step"><em>02</em>
+        <div><h2>ИИ раскладывает рассказ</h2>
+        <p>Из фразы получаются привычки и состояния: кофе, экран перед сном, сон на пять часов,
+          тревога. Разные формулировки сводятся к одному названию.</p></div></div>
+      <div class="step"><em>03</em>
+        <div><h2>К словам добавляются цифры</h2>
+        <p>Сон, стресс и активность приходят с кольца или часов. Человек их не вводит.</p></div></div>
+      <div class="step"><em>04</em>
+        <div><h2>Находим повтор и проверяем его</h2>
+        <p>«Третий раз за две недели одно и то же». Две недели без кофе после трёх — и честный
+          ответ: подтвердилось или нет.</p></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- 04 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner wide">
+    <p class="eyebrow"><i></i>Частота <em>· 04</em></p>
+    <h1>Повод написать даёт жизнь, а не напоминание</h1>
+    <p class="big">В конкурсе считают обращения на пользователя в день. Вот откуда они берутся
+      у нас.</p>
+    <div class="rows">
+      <div class="row"><b>Утро</b><span>Отметка состояния: как спалось, как самочувствие</span><u>1–2</u></div>
+      <div class="row"><b>День</b><span>Две-четыре голосовые заметки, каждая с коротким уточнением</span><u>8–14</u></div>
+      <div class="row"><b>День</b><span>Один вопрос от бота — тот, которого не хватает для проверки</span><u>2</u></div>
+      <div class="row"><b>Вечер</b><span>Итог дня и оценка состояния</span><u>3–5</u></div>
+      <div class="row"><b>Вечер</b><span>Ответ на найденную связь или отметка по эксперименту</span><u>2–3</u></div>
+      <div class="row total"><b>За сутки</b><span></span><u>16–26</u></div>
+    </div>
+    <div class="two">
+      <p><strong>Трекер привычек</strong> — 1–3 обращения: отметил галочки и закрыл.</p>
+      <p><strong>Продукт поддержки</strong> — 1–2: его открывают, когда стало плохо, а это не каждый день.</p>
+      <p><strong>У нас частота растёт</strong>: чем больше записей, тем точнее выводы, а чем точнее выводы,
+        тем больше причин записывать дальше.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 05 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner wide">
+    <p class="eyebrow"><i></i>Умное кольцо Sber <em>· 05</em></p>
+    <h1>Кольцо видит стресс. Оно не знает, из-за чего</h1>
+    <p class="big">Кольцо меряет сон, стресс, энергию и пульс, GigaChat даёт по этим цифрам советы.
+      Не хватает одного — что произошло в жизни.</p>
+    <div class="two">
       <div>
-        <h1>Что на меня <mark>влияет</mark></h1>
-        <p class="lede">Человек рассказывает про свой день обычными словами. Мы достаём из рассказа
-          события и состояния, добавляем данные кольца, находим повторяющиеся связи и предлагаем
-          проверить их коротким экспериментом на нём самом.</p>
-        <div class="stat">
-          <div><b>16–26</b><span>обращений в день у активного пользователя</span></div>
-          <div><b>Health &amp; Habits</b><span>направление</span></div>
-          <div><b>Код готов</b><span>ядро и демо в открытом репозитории</span></div>
-        </div>
+        <h2>Кольцо даёт нам</h2>
+        <p>Сон, стресс и активность каждый день, без единого действия человека. Это половина
+          данных, которые нужны для поиска связей.</p>
       </div>
-      <div class="card">
-        <div class="card-h">как это выглядит</div>
-        <div class="card-b">
-          <div class="m me">🎤 «Опять кофе в пять вечера, потом до ночи в ленте»</div>
-          <div class="m">Записал. Как спалось?</div>
-          <div class="m me">Часов пять, разбитый</div>
-          <div class="m">Третий раз за две недели одно и то же. Проверим?</div>
-          <div class="m ok">Через 14 дней: подтвердилось — с кофе после 15:00 сон хуже на 1,5 балла</div>
-        </div>
+      <div>
+        <h2>Мы даём кольцу</h2>
+        <p>Причину скачка: перелёт, разговор, дедлайн. Без неё совет остаётся общим —
+          «попробуйте расслабиться».</p>
+      </div>
+      <div>
+        <h2>Вместе</h2>
+        <p>Кольцо перестают носить, когда цифры больше не удивляют. Проверенная связь возвращает
+          смысл ежедневному ношению.</p>
       </div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <section>
-    <div class="sec-head">
-      <h4>Гипотеза в формате конкурса</h4>
-      <h2>Карточка гипотезы</h2>
-    </div>
-    <div class="hyp">
-      <div class="hyp-top"><b>Что на меня влияет</b><span>#Health &amp; Habits</span></div>
-      <dl class="hyp-row">
-        <dt>Проблема</dt>
-        <dd>Состояние скачет — сон, тревога, энергия, головные боли, — а причины непонятны.
-          Данные разбросаны: кольцо знает пульс и сон, календарь знает нагрузку, а что вчера был
-          тяжёлый разговор, не знает никто. Приложения дают обезличенные советы, а дневники,
-          которые могли бы дать ответ, забрасываются на второй неделе: писать долго и непонятно зачем.</dd>
-      </dl>
-      <dl class="hyp-row">
-        <dt>Гипотеза</dt>
-        <dd>ИИ превращает короткий ежедневный рассказ в исследование собственной жизни: слушает
-          голосом, сам достаёт события и состояния, дополняет их данными о сне и активности,
-          находит повторяющиеся связи и предлагает проверить их экспериментом на самом человеке.
-          На выходе не совет из интернета, а знание о себе, подтверждённое на своих данных.</dd>
-      </dl>
-    </div>
-  </section>
-
-  <section>
-    <div class="sec-head">
-      <h4>Главный аргумент</h4>
-      <h2>Почему частотность выше, чем у гипотез из списка</h2>
-      <p class="lede">Повод обратиться к продукту создаёт не напоминание, а любое событие дня —
-        их десятки. День активного пользователя:</p>
-    </div>
-    <div class="table-scroll">
-      <table class="data">
-        <thead><tr><th>Момент дня</th><th>Что происходит</th><th class="r">Обращений</th></tr></thead>
-        <tbody>
-          <tr><td>Утро</td><td>Отметка состояния: как спалось, как самочувствие</td><td class="r">1–2</td></tr>
-          <tr><td>День</td><td>2–4 голосовые заметки, каждая с коротким уточнением от бота</td><td class="r">8–14</td></tr>
-          <tr><td>День</td><td>Один вопрос от системы — тот, которого не хватает для текущей гипотезы</td><td class="r">2</td></tr>
-          <tr><td>Вечер</td><td>Итог дня и оценка состояния</td><td class="r">3–5</td></tr>
-          <tr><td>Вечер</td><td>Реакция на найденную связь или отметка о ходе эксперимента</td><td class="r">2–3</td></tr>
-        </tbody>
-        <tfoot><tr><td colspan="2">Итого в сутки</td><td class="r">16–26</td></tr></tfoot>
-      </table>
-    </div>
-    <div class="grid" style="margin-top:18px">
-      <div class="tile soft"><h3>Трекер привычек</h3><p>1–3 обращения в день: отметил галочки и закрыл.</p></div>
-      <div class="tile soft"><h3>Продукт поддержки</h3><p>1–2 обращения: открывают, когда стало плохо, а это не каждый день.</p></div>
-      <div class="tile soft"><h3>Наш продукт</h3><p>Частота растёт со временем: чем больше записей, тем точнее выводы, а чем точнее выводы, тем больше причин записывать дальше.</p></div>
-    </div>
-  </section>
-
-  <section>
-    <div class="sec-head">
-      <h4>Умное кольцо Sber</h4>
-      <h2>Кольцо знает, что стресс вырос. Оно не знает почему</h2>
-      <p class="lede">Кольцо измеряет сон, стресс, энергию, пульс и сатурацию, GigaChat даёт по ним
-        рекомендации, из приложения можно записаться в СберЗдоровье. Разрыв ровно один: прибор не
-        видит событий жизни. Дневник закрывает его — и наоборот, кольцо избавляет дневник от
-        ручного ввода цифр.</p>
-    </div>
-    <div class="grid">
-      <div class="tile"><h4>кольцо даёт нам</h4><h3>Объективные метрики</h3><p>Сон, стресс, энергия и пульс каждый день без единого действия пользователя. Это половина данных, которые нужны движку связей.</p></div>
-      <div class="tile"><h4>мы даём кольцу</h4><h3>Объяснение цифр</h3><p>Причина скачка стресса — перелёт, разговор, дедлайн. Без контекста рекомендация остаётся общей: «попробуйте расслабиться».</p></div>
-      <div class="tile"><h4>вместе</h4><h3>Повод носить дальше</h3><p>Носимые устройства бросают, когда цифры перестают удивлять. Проверенная связь возвращает смысл ежедневному ношению.</p></div>
-    </div>
-  </section>
-
-  <section>
-    <div class="sec-head">
-      <h4>Что уже сделано</h4>
-      <h2>Ядро гипотезы написано и лежит в открытом репозитории</h2>
-      <p class="lede">Демонстрация запускается без ключей, сети и регистрации: <a href="https://github.com/avadkuznetsov-a11y/what-affects-me">github.com/avadkuznetsov-a11y/what-affects-me</a></p>
-    </div>
+<!-- 06 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner wide">
+    <p class="eyebrow"><i></i>Что уже сделано <em>· 06</em></p>
+    <h1>Прототип написан, код открыт</h1>
+    <p class="big">Запускается без ключей и без интернета: одна команда — и виден весь путь
+      от записи до вывода.</p>
     <pre>$ python3 -m demo.run
 
-«кофе» → «качество сна» на следующий день: хуже на 1.5 балла
-        (44 дня с фактором против 45 без, уровень: подтверждено)
-«тренировка» → «энергия» в тот же день: лучше на 0.9 балла
-        (38 дней с фактором против 52 без, уровень: вероятная связь)
-«сладкое» → «энергия»: уровень наблюдение     ← подсадной фактор, связи нет
+«кофе» → «сон» на следующий день: хуже на 1.5 балла      подтверждено
+«тренировка» → «энергия» в тот же день: лучше на 0.9     вероятная связь
+«сладкое» → «энергия»                                    <span class="quiet">пустышка, связи нет</span>
 
 $ python3 -m pytest tests -q
-16 passed</pre>
-    <div class="grid" style="margin-top:18px">
-      <div class="tile"><h3>Разбор рассказа</h3><p>Речь превращается в факты. Синонимы сводятся к одному имени, отрицания читаются правильно: «не пил кофе» — это факт об отсутствии.</p></div>
-      <div class="tile"><h3>Движок связей</h3><p>Задержки до двух дней, перестановочный тест, порог наблюдений и поправка на множественные сравнения.</p></div>
-      <div class="tile"><h3>Эксперименты</h3><p>Из связи собирается план на две недели и честный вердикт: подтвердилось, не подтвердилось или данных не хватило.</p></div>
-      <div class="tile"><h3>Источники данных</h3><p>Умное кольцо Sber и Apple Health приводятся к одной шкале. Сказанное человеком имеет приоритет над показаниями прибора.</p></div>
+18 passed</pre>
+    <div class="two">
+      <p><strong>Считает математика, а не нейросеть.</strong> Модель нужна, чтобы понять речь
+        и объяснить результат. Насколько связь сильная — считает код. Иначе выводам нельзя верить.</p>
+      <p><strong>Проверка на пустышку.</strong> В тестовые данные заложен фактор, который ни на что
+        не влияет. Тест требует, чтобы программа про него промолчала.</p>
+      <p><strong>Мало данных — молчим.</strong> Пока нет семи дней с привычкой и семи без неё,
+        не показываем ничего.</p>
     </div>
-    <ul class="plain" style="margin-top:22px">
-      <li><b>Цифры считает статистика, а не модель.</b> Языковая модель разбирает речь и объясняет результат словами, но величину эффекта считает обычный код. Иначе выводам нельзя доверять.</li>
-      <li><b>Ложные связи отсекаются на уровне теста.</b> В синтетические данные зашит фактор-пустышка, и отдельный тест требует, чтобы движок по нему промолчал.</li>
-      <li><b>Секретов в репозитории нет.</b> GigaChat читает токен из окружения, расчёт связей полностью локальный.</li>
-    </ul>
-  </section>
+    <div class="links">
+      <a href="https://github.com/avadkuznetsov-a11y/what-affects-me">github.com/avadkuznetsov-a11y/what-affects-me</a>
+    </div>
+  </div>
+</section>
 
-  <section>
-    <div class="sec-head">
-      <h4>Рынок</h4>
-      <h2>Все работают либо с данными, либо со словами</h2>
+<!-- 07 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner wide">
+    <p class="eyebrow"><i></i>Кто рядом <em>· 07</em></p>
+    <h1>Одни работают с цифрами, другие со словами</h1>
+    <div class="rows">
+      <div class="row"><b>Bearable</b><span>Корреляции и эксперименты, но всё вносится руками — десятки полей каждый день</span><u></u></div>
+      <div class="row"><b>Exist.io</b><span>Связывает данные сервисов, но не понимает рассказ и ничего не проверяет</span><u></u></div>
+      <div class="row"><b>Rosebud</b><span>ИИ-дневник с памятью, но без данных с устройств и без проверки выводов</span><u></u></div>
+      <div class="row"><b>Oura, WHOOP, Welltory</b><span>Биометрия и советы, про жизнь человека не знают</span><u></u></div>
+      <div class="row"><b>Mind Tracker, Moodi</b><span>Российские дневники настроения: без носимых устройств и без экспериментов</span><u></u></div>
     </div>
-    <div class="table-scroll">
-      <table class="data">
-        <thead><tr><th>Кто</th><th>Что делает</th><th>Чего не делает</th></tr></thead>
-        <tbody>
-          <tr><td>Bearable</td><td>Трекинг симптомов, корреляции, эксперименты</td><td>Всё вручную: десятки полей ежедневно, доходят единицы</td></tr>
-          <tr><td>Exist.io</td><td>Связывает данные сервисов и находит корреляции</td><td>Не понимает рассказ, не проверяет гипотезы</td></tr>
-          <tr><td>Rosebud</td><td>ИИ-дневник с памятью, замечает эмоциональные темы</td><td>Не подключает данные, не проверяет выводы</td></tr>
-          <tr><td>Oura, WHOOP, Welltory</td><td>Биометрия и коучинг восстановления</td><td>Слепы к событиям жизни</td></tr>
-          <tr><td>Mind Tracker, Moodi (РФ)</td><td>Дневники настроения с ИИ-анализом</td><td>Без носимых устройств и без экспериментов</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p style="margin-top:16px; color:var(--muted); font-size:14.5px">Ни один продукт не доводит найденную
-      связь до проверки на конкретном человеке. Продукта такого класса нет и на российском рынке.</p>
-  </section>
+    <p style="margin-top:30px" class="big">Никто не доводит найденную связь до проверки
+      на конкретном человеке. В России продукта такого класса нет.</p>
+  </div>
+</section>
 
-  <section>
-    <div class="sec-head">
-      <h4>План</h4>
-      <h2>12 недель до 1000 DAU</h2>
-    </div>
+<!-- 08 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner wide">
+    <p class="eyebrow"><i></i>План <em>· 08</em></p>
+    <h1>12 недель до тысячи человек в день</h1>
     <div class="weeks">
-      <div class="week"><em>Неделя 1</em><b>Интервью и каркас</b><span>15 интервью, бот принимает текст и голос</span></div>
-      <div class="week"><em>Неделя 2</em><b>Разбор речи</b><span>Ещё 15 интервью, факты из рассказа, 10 человек ведут дневник</span></div>
-      <div class="week"><em>Неделя 3</em><b>Данные</b><span>Кольцо, Health, календарь. 70 тестовых пользователей</span></div>
-      <div class="week"><em>Неделя 4</em><b>Связи</b><span>Движок находит первые закономерности у живых людей</span></div>
-      <div class="week"><em>Неделя 5</em><b>Эксперименты</b><span>Первые подтверждённые и опровергнутые гипотезы</span></div>
-      <div class="week"><em>Неделя 6</em><b>Публичный запуск</b><span>Открытый доступ, аналитика, воронка</span></div>
-      <div class="week"><em>Неделя 7</em><b>Удержание</b><span>Ценность в первый день, а не на третьей неделе</span></div>
-      <div class="week"><em>Неделя 8</em><b>Первые каналы</b><span>Сообщества и посевы, понятная стоимость привлечения</span></div>
-      <div class="week"><em>Неделя 9</em><b>Приглашения</b><span>Реферальная механика и совместные разборы</span></div>
+      <div class="week"><em>Неделя 1</em><b>Интервью и каркас</b><span>15 разговоров с людьми, бот принимает текст и голос</span></div>
+      <div class="week"><em>Неделя 2</em><b>Разбор речи</b><span>Ещё 15 интервью, первые десять человек ведут дневник</span></div>
+      <div class="week"><em>Неделя 3</em><b>Данные</b><span>Кольцо, часы, календарь. 70 человек в тесте</span></div>
+      <div class="week"><em>Неделя 4</em><b>Связи</b><span>Первые находки у живых людей</span></div>
+      <div class="week"><em>Неделя 5</em><b>Эксперименты</b><span>Первые подтверждённые и опровергнутые догадки</span></div>
+      <div class="week"><em>Неделя 6</em><b>Открываем всем</b><span>Публичный запуск, считаем воронку</span></div>
+      <div class="week"><em>Неделя 7</em><b>Удержание</b><span>Польза в первый день, а не на третьей неделе</span></div>
+      <div class="week"><em>Неделя 8</em><b>Первые каналы</b><span>Сообщества и посевы, считаем стоимость привлечения</span></div>
+      <div class="week"><em>Неделя 9</em><b>Приглашения</b><span>Зовём друзей, общие разборы</span></div>
       <div class="week"><em>Неделя 10</em><b>Масштаб</b><span>Докручиваем то, что сработало</span></div>
-      <div class="week"><em>Неделя 11</em><b>Частота</b><span>Утро, день, вечер: рост обращений на пользователя</span></div>
-      <div class="week"><em>Неделя 12</em><b>Защита</b><span>Чистые метрики, подготовка результатов</span></div>
+      <div class="week"><em>Неделя 11</em><b>Частота</b><span>Утро, день, вечер — больше поводов написать</span></div>
+      <div class="week"><em>Неделя 12</em><b>Защита</b><span>Чистые метрики, готовим результаты</span></div>
     </div>
-  </section>
+  </div>
+</section>
 
-  <footer>
-    <span>Что на меня влияет · заявка Sber500 x Disrupt</span>
-    <span>17.08.2026</span>
-  </footer>
-</div>
+<!-- 09 ───────────────────────────────────────────────── -->
+<section class="slide">
+  <div class="inner">
+    <p class="eyebrow"><i></i>Зачем нам программа <em>· 09</em></p>
+    <h1>Сами дотянем продукт, помощь нужна с людьми</h1>
+    <p class="big">С технической частью справляемся: прототип уже работает. Нужна помощь там,
+      где у нас меньше опыта — как приводить и удерживать массовую аудиторию.</p>
+    <div class="nums">
+      <div><b>1 000</b><span>человек в день за три месяца</span></div>
+      <div><b>16–26</b><span>обращений в день у активного пользователя</span></div>
+      <div><b>18</b><span>тестов на прототипе уже сейчас</span></div>
+    </div>
+    <div class="links">
+      <a href="https://github.com/avadkuznetsov-a11y/what-affects-me">Код прототипа</a>
+      <a href="https://avadkuznetsov-a11y.github.io/what-affects-me/">Эта презентация</a>
+    </div>
+  </div>
+</section>
 </body>
 </html>
