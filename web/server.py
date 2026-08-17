@@ -18,7 +18,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from demo.generate import build
 from wam.derive import DEVICE_SOURCES, derive_factors
 from wam.experiments import Experiment, evaluate
-from wam.extract import RuleExtractor
+from wam.extract import LLMExtractor, RuleExtractor
+from wam.llm import available_engine
 from wam.insights import find_links
 from wam.phrases import basis, next_step, say
 from wam.questions import apply_answer, next_question
@@ -27,6 +28,25 @@ from wam.wearables import SberRingSource, merge_into
 
 HOST, PORT = "127.0.0.1", 8765
 DEFAULT_DAYS = 120
+
+# Речь разбирает модель, если для неё есть ключ в окружении. Ключей в
+# репозитории нет: у того, кто скачает код, будет работать разбор по правилам,
+# пока он не подставит свой ключ.
+ENGINE_NAME, _COMPLETE = available_engine()
+_RULES = RuleExtractor()
+_MODEL = LLMExtractor(_COMPLETE) if ENGINE_NAME != "правила" else None
+
+
+def parse_day(text: str, day):
+    """Разбор фразы: сначала модель, при сбое или пустом ответе - правила."""
+    if _MODEL is not None:
+        try:
+            record = _MODEL.extract(text, day)
+            if record.facts:
+                return record, ENGINE_NAME
+        except Exception:
+            pass
+    return _RULES.extract(text, day), "правила"
 
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
@@ -72,12 +92,14 @@ PAGE = """<!doctype html>
  .ringrow span{font-weight:700;min-width:44px}
  .tools{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;align-items:center}
  select{font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}
+ pre.keys{margin:10px 0 0;padding:12px 14px;background:#F4F6F7;border-radius:8px;overflow-x:auto;
+  font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12.5px;line-height:1.7;color:#3A3F42}
 </style></head><body>
 <div class="banner">Это прототип для заявки. Дневник за выбранный срок придуман для показа:
  связи в нём заложены заранее, чтобы было видно, что программа находит настоящее и отсеивает случайное.</div>
 
 <div class="wrap">
-  <p class="eyebrow"><i></i>Прототип</p>
+  <p class="eyebrow"><i></i>Прототип · разбор речи: __ENGINE__</p>
   <h1>Что на меня влияет</h1>
   <p>Расскажите про свой день обычными словами - так же, как написали бы в мессенджере.
      Программа спросит, если чего-то не хватает, и скажет, что уже знает про ваши привычки.</p>
@@ -107,6 +129,15 @@ PAGE = """<!doctype html>
       <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
       <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
     </div>
+    <b style="display:block;margin-top:20px">Чем разбирается речь</b>
+    <p class="hint" style="margin-top:8px">Сейчас: <b id="engine">__ENGINE__</b>.
+      Разбор по правилам работает всегда и без интернета, но понимает только знакомые слова.
+      Чтобы разбирала модель, запустите с собственным ключом - он читается из окружения
+      и никуда не сохраняется:</p>
+    <pre class="keys">GIGACHAT_TOKEN=... python3 -m web.server
+YANDEX_API_KEY=... YANDEX_FOLDER_ID=... python3 -m web.server
+ANTHROPIC_API_KEY=... python3 -m web.server</pre>
+
     <div class="tools">
       <select id="days">
         <option value="21">дневник за 3 недели</option>
@@ -273,12 +304,15 @@ def _handle(text: str, ring: dict | None, days: int) -> list[dict]:
         apply_answer(SESSION.record, SESSION.pending, text)
         if _metrics_snapshot(SESSION.record) == before:
             # ответ не понят - разбираем его как обычную фразу
-            parsed = RuleExtractor().extract(text, SESSION.record.day)
-            SESSION.record.facts.extend(parsed.facts)
+            parsed, engine = parse_day(text, SESSION.record.day)
+            for fact in parsed.facts:
+                SESSION.record.add(fact)
         SESSION.pending = None
+        engine = locals().get("engine", ENGINE_NAME)
     else:
-        parsed = RuleExtractor().extract(text, SESSION.record.day)
-        SESSION.record.facts.extend(parsed.facts)
+        parsed, engine = parse_day(text, SESSION.record.day)
+        for fact in parsed.facts:
+            SESSION.record.add(fact)
 
     if ring:
         day_timeline = Timeline()
@@ -290,7 +324,8 @@ def _handle(text: str, ring: dict | None, days: int) -> list[dict]:
         SESSION.pending = next_question(SESSION.record)
         return [{"kind": "ask", "text": SESSION.pending}]
 
-    messages.append({"kind": "bot", "text": "Записал:", "note": _facts_note(SESSION.record)})
+    messages.append({"kind": "bot", "text": f"Записал, разобрал {engine}:",
+                     "note": _facts_note(SESSION.record)})
 
     question = next_question(SESSION.record, links)
     if question:
@@ -351,7 +386,9 @@ def _summary(days: int) -> list[dict]:
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
-            self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
+            SESSION.reset()      # открыли страницу - разговор начинается с чистого листа
+            self._send(PAGE.replace("__ENGINE__", ENGINE_NAME).encode("utf-8"),
+                       "text/html; charset=utf-8")
         elif self.path.startswith("/summary"):
             self._json({"messages": _summary(_days_param(self.path))})
         elif self.path == "/reset":

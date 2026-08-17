@@ -42,6 +42,20 @@ class DayRecord:
     raw_text: str = ""
 
     def add(self, fact: Fact) -> None:
+        """
+        Добавить факт за день. Один показатель за день - одно значение:
+        если сон уже записан, второй записи не будет. Сказанное человеком
+        важнее показаний прибора, поэтому рассказ вытесняет кольцо, но не
+        наоборот - человек знает про свою ночь больше, чем датчик.
+        """
+        existing = next((f for f in self.facts
+                         if f.kind == fact.kind and f.name == fact.name), None)
+        if existing is not None:
+            from_device = existing.source not in ("diary", "")
+            if from_device and fact.source in ("diary", ""):
+                self.facts.remove(existing)     # рассказ вытесняет прибор
+            else:
+                return                          # иначе оставляем то, что было
         self.facts.append(fact)
 
     def factor(self, name: str) -> float | None:

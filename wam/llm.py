@@ -14,6 +14,32 @@ from typing import Callable
 Complete = Callable[[str], str]
 
 
+def ssl_context():
+    """
+    Контекст проверки сертификатов.
+
+    Python, поставленный не из системы, часто идёт без корневых сертификатов -
+    тогда любой https-запрос падает с CERTIFICATE_VERIFY_FAILED, хотя curl на
+    той же машине работает. Ищем набор сертификатов в привычных местах; если
+    ничего не нашли, отдаём обычный контекст и пусть ошибка будет честной.
+    """
+    import ssl
+
+    candidates = []
+    try:
+        import certifi
+
+        candidates.append(certifi.where())
+    except ImportError:
+        pass
+    candidates += ["/etc/ssl/cert.pem", "/usr/local/etc/openssl/cert.pem"]
+
+    for path in candidates:
+        if path and os.path.exists(path):
+            return ssl.create_default_context(cafile=path)
+    return ssl.create_default_context()
+
+
 def offline_complete(prompt: str) -> str:
     """Заглушка для разработки и тестов: возвращает пустой разбор."""
     return json.dumps({"factors": [], "metrics": [], "events": []}, ensure_ascii=False)
@@ -43,11 +69,96 @@ def gigachat_complete(model: str = "GigaChat", timeout: int = 30) -> Complete:
             headers={"Content-Type": "application/json",
                      "Authorization": f"Bearer {token}"},
         )
-        with urllib.request.urlopen(request, timeout=timeout) as response:
+        with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
             payload = json.loads(response.read())
         return payload["choices"][0]["message"]["content"]
 
     return complete
+
+
+def yandexgpt_complete(model: str = "yandexgpt-lite", timeout: int = 30) -> Complete:
+    """
+    Вызов YandexGPT. Ключ и каталог читаются из окружения: YANDEX_API_KEY и
+    YANDEX_FOLDER_ID. В репозитории их нет и быть не должно - тот, кто
+    скачает код, получит разбор по правилам, пока не подставит свой ключ.
+    """
+    key = os.environ.get("YANDEX_API_KEY", "")
+    folder = os.environ.get("YANDEX_FOLDER_ID", "")
+    if not key or not folder:
+        raise RuntimeError("не заданы YANDEX_API_KEY и YANDEX_FOLDER_ID")
+
+    def complete(prompt: str) -> str:
+        import urllib.request
+
+        body = json.dumps({
+            "modelUri": f"gpt://{folder}/{model}",
+            "completionOptions": {"temperature": 0.1, "maxTokens": 600},
+            "messages": [{"role": "user", "text": prompt}],
+        }).encode()
+        request = urllib.request.Request(
+            "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
+            data=body,
+            headers={"Content-Type": "application/json", "Authorization": f"Api-Key {key}"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
+            payload = json.loads(response.read())
+        return payload["result"]["alternatives"][0]["message"]["text"]
+
+    return complete
+
+
+def claude_complete(model: str = "claude-sonnet-5", timeout: int = 30) -> Complete:
+    """
+    Вызов Claude. Ключ читается из ANTHROPIC_API_KEY. Обращаю внимание: из
+    России этот адрес может быть недоступен, тогда сработает следующий движок.
+    """
+    key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not key:
+        raise RuntimeError("не задан ANTHROPIC_API_KEY")
+
+    def complete(prompt: str) -> str:
+        import urllib.request
+
+        body = json.dumps({
+            "model": model,
+            "max_tokens": 600,
+            "temperature": 0.1,
+            "messages": [{"role": "user", "content": prompt}],
+        }).encode()
+        request = urllib.request.Request(
+            "https://api.anthropic.com/v1/messages",
+            data=body,
+            headers={"Content-Type": "application/json", "x-api-key": key,
+                     "anthropic-version": "2023-06-01"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
+            payload = json.loads(response.read())
+        return payload["content"][0]["text"]
+
+    return complete
+
+
+# Как включить свою модель - это же показывается на странице прототипа
+ENGINE_HINTS = (
+    ("GigaChat", "GIGACHAT_TOKEN"),
+    ("YandexGPT", "YANDEX_API_KEY и YANDEX_FOLDER_ID"),
+    ("Claude", "ANTHROPIC_API_KEY"),
+)
+
+
+def available_engine() -> tuple[str, Complete]:
+    """
+    Что доступно прямо сейчас: модель, если для неё есть ключ, иначе правила.
+    Правила - не заглушка, а страховка: продукт не должен вставать из-за
+    недоступного сервиса.
+    """
+    for name, factory in (("GigaChat", gigachat_complete), ("YandexGPT", yandexgpt_complete),
+                          ("Claude", claude_complete)):
+        try:
+            return name, factory()
+        except RuntimeError:
+            continue
+    return "правила", offline_complete
 
 
 EXPLAIN_PROMPT = (

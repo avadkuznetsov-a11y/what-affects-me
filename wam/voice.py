@@ -68,7 +68,9 @@ class SaluteSpeech:
             data=audio,
             headers={"Authorization": f"Bearer {self._token}", "Content-Type": content_type},
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
+        from .llm import ssl_context
+
+        with urllib.request.urlopen(request, timeout=60, context=ssl_context()) as response:
             payload = json.loads(response.read())
         return " ".join(payload.get("result", [])).strip()
 

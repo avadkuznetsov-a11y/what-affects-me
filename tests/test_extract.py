@@ -50,3 +50,24 @@ def test_bad_state_without_score():
     """Назвал тревогу и не поставил оценку — это точно не хороший день."""
     record = RuleExtractor().extract("Тревога какая-то весь день", date(2026, 8, 1))
     assert record.metric("тревога") == 3.0
+
+
+def test_model_metrics_are_limited_to_known_names():
+    """Модель не должна придумывать свои показатели - по ним не набрать статистики."""
+    def fake(_prompt):
+        return ('{"metrics":[{"name":"сон","value":4},{"name":"аура","value":9}],'
+                '"factors":[{"name":"ссора с руководителем","value":1}]}')
+
+    record = LLMExtractor(fake).extract("поругался, потом не мог уснуть", date(2026, 8, 1))
+    assert record.metric("качество сна") == 4.0     # «сон» сведён к общему имени
+    assert record.metric("аура") is None            # выдумка отброшена
+    assert record.factor("ссора с руководителем") == 1.0
+
+
+def test_model_zeros_for_unmentioned_metrics_are_dropped():
+    """Модель любит дописать нули по всем показателям сразу - это не данные."""
+    def fake(_prompt):
+        return '{"metrics":[{"name":"тревога","value":0},{"name":"головная боль","value":0}]}'
+
+    record = LLMExtractor(fake).extract("сходил на пробежку", date(2026, 8, 1))
+    assert record.facts == []
