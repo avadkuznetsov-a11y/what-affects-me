@@ -68,6 +68,11 @@ PAGE = """<!doctype html>
  .known b{font-size:15px;display:block;margin-bottom:8px}
  .known div{font-size:14.5px;color:var(--text);margin-bottom:6px}
  .known .none{color:var(--soft)}
+ .sources{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+ .sources label{display:flex;align-items:baseline;gap:10px;font-size:14.5px}
+ .sources label.off{color:var(--soft)}
+ .sources em{font-style:normal;font-size:13px;color:var(--soft)}
+ .sources label.on span{font-weight:600;color:var(--ink)}
 </style></head><body>
 <div class="banner">Это прототип для заявки. Дневник за 120 дней придуман для показа,
   связи в нём заложены заранее — так видно, что программа находит настоящее и отсеивает случайное.</div>
@@ -89,14 +94,29 @@ PAGE = """<!doctype html>
      «перелёт, спал четыре часа», «не пил кофе, выспался отлично».</p>
 
   <div class="ring">
-    <b>Кольцо за этот день</b>
+    <b>Источники данных</b>
+    <div class="sources">
+      <label class="on"><input type="checkbox" id="src-ring" checked onchange="parse()">
+        <span>Умное кольцо Sber</span><em>сон, стресс, шаги</em></label>
+      <label class="off"><input type="checkbox" disabled>
+        <span>Apple Health</span><em>разбор написан, подключение в программе</em></label>
+      <label class="off"><input type="checkbox" disabled>
+        <span>Health Connect</span><em>для Android, тот же формат</em></label>
+      <label class="off"><input type="checkbox" disabled>
+        <span>Календарь</span><em>встречи и перелёты как факторы</em></label>
+      <label class="off"><input type="checkbox" disabled>
+        <span>Погода и город</span><em>давление, смена часового пояса</em></label>
+    </div>
+
+    <b style="display:block;margin-top:18px">Что кольцо намеряло за этот день</b>
     <div class="ringrow">
       <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="ringLabel()"><span id="sleepv">41</span></label>
       <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="ringLabel()"><span id="stressv">72</span></label>
       <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="ringLabel()"><span id="stepsv">3000</span></label>
     </div>
-    <p class="hint" style="margin:8px 0 0">Эти цифры человек не вводит — они приходят с прибора
-       и участвуют в разборе наравне со словами.</p>
+    <p class="hint" style="margin:10px 0 0">Эти цифры человек не вводит, они приходят с прибора.
+       Снимите галочку с кольца и разберите запись заново — станет видно, сколько фактов
+       пропадает без него.</p>
   </div>
 
   <div class="out" id="out"><p class="hint">Здесь появится результат.</p></div>
@@ -152,11 +172,11 @@ function listen(){
 }
 async function parse(){
   const text = document.getElementById('text').value;
-  const ring = {
+  const ring = document.getElementById('src-ring').checked ? {
     sleep_score: +document.getElementById('sleep').value,
     stress_level: +document.getElementById('stress').value,
     steps: +document.getElementById('steps').value
-  };
+  } : null;
   const r = await fetch('/parse', {method:'POST', body: JSON.stringify({text, ring})});
   const d = await r.json();
   const out = document.getElementById('out');
