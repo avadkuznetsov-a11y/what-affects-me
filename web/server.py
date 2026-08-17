@@ -73,6 +73,8 @@ PAGE = """<!doctype html>
  .sources label.off{color:var(--soft)}
  .sources em{font-style:normal;font-size:13px;color:var(--soft)}
  .sources label.on span{font-weight:600;color:var(--ink)}
+ .period{display:inline-flex;gap:8px;align-items:center}
+ .period select{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff}
 </style></head><body>
 <div class="banner">Это прототип для заявки. Дневник за 120 дней придуман для показа,
   связи в нём заложены заранее — так видно, что программа находит настоящее и отсеивает случайное.</div>
@@ -86,7 +88,16 @@ PAGE = """<!doctype html>
   <div class="row">
     <button onclick="parse()">Разобрать запись</button>
     <button class="ghost" id="mic" onclick="listen()">🎤 Наговорить</button>
-    <button class="ghost" onclick="demo()">Показать выводы за 4 месяца</button>
+    <span class="period">
+      <select id="days">
+        <option value="21">3 недели</option>
+        <option value="45">1,5 месяца</option>
+        <option value="90">3 месяца</option>
+        <option value="120" selected>4 месяца</option>
+        <option value="180">полгода</option>
+      </select>
+      <button class="ghost" onclick="demo()">Показать выводы</button>
+    </span>
   </div>
   <p class="hint" id="micnote" style="margin-top:10px;min-height:20px"></p>
   <p class="hint">В продукте это голосовое в мессенджере. Здесь речь распознаёт сам браузер,
@@ -193,10 +204,17 @@ async function parse(){
 }
 async function demo(){
   const out = document.getElementById('out');
-  out.innerHTML = '<p class=hint>Считаю…</p>';
-  const r = await fetch('/demo');
+  const days = document.getElementById('days').value;
+  out.innerHTML = '<p class=hint>Считаю. На длинных периодах это занимает несколько секунд.</p>';
+  const r = await fetch('/demo?days=' + days);
   const d = await r.json();
-  out.innerHTML = '<h2 style="margin-top:0">Что нашлось за 4 месяца дневника</h2>' +
+  if(!d.links.length){
+    out.innerHTML = `<h2 style="margin-top:0">За ${d.period} выводов нет</h2>` +
+      `<p>${d.explain}</p><p class="hint">Возьмите период подлиннее и нажмите ещё раз.</p>`;
+    return;
+  }
+  out.innerHTML = `<h2 style="margin-top:0">Что нашлось за ${d.period}</h2>` +
+    `<p class="hint" style="margin:-6px 0 14px">${d.explain}</p>` +
     d.links.map(l => `<div class="link">${l.text}<em>${l.detail}</em><span class="note ${l.warn ? 'warn' : ''}">${l.cause}</span></div>`).join('') +
     `<h2>Проверка самой сильной связи</h2><div class="ex"><b>${d.experiment.hypothesis}</b><ul>` +
     d.experiment.plan.map(s => `<li>${s}</li>`).join('') +
@@ -210,8 +228,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
-        elif self.path == "/demo":
-            self._send(json.dumps(_demo(), ensure_ascii=False).encode("utf-8"),
+        elif self.path.startswith("/demo"):
+            days = 120
+            if "days=" in self.path:
+                try:
+                    days = max(14, min(365, int(self.path.split("days=")[1].split("&")[0])))
+                except ValueError:
+                    pass
+            self._send(json.dumps(_demo(days), ensure_ascii=False).encode("utf-8"),
                        "application/json; charset=utf-8")
         else:
             self.send_error(404)
@@ -259,28 +283,54 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-_CACHE: dict[str, object] = {}
+_CACHE: dict[int, tuple] = {}
+DEFAULT_DAYS = 120
 
 
-def _known_timeline():
-    """Дневник за 120 дней считаем один раз: перестановочный тест не быстрый."""
-    if "timeline" not in _CACHE:
-        _CACHE["timeline"] = derive_factors(build(days=120))
-    return _CACHE["timeline"]
+def _known_timeline(days: int = DEFAULT_DAYS):
+    """Считаем один раз на каждый период: перестановочный тест не быстрый."""
+    if days not in _CACHE:
+        timeline = derive_factors(build(days=days))
+        _CACHE[days] = (timeline, find_links(timeline))
+    return _CACHE[days][0]
 
 
-def _known_links():
-    if "links" not in _CACHE:
-        _CACHE["links"] = find_links(_known_timeline())
-    return _CACHE["links"]
+def _known_links(days: int = DEFAULT_DAYS):
+    _known_timeline(days)
+    return _CACHE[days][1]
 
 
-def _demo() -> dict:
-    timeline = _known_timeline()
-    links = [l for l in _known_links() if l.strength != "наблюдение"]
-    experiment = Experiment.from_link(links[0], start=timeline.days[-40].day, days=40)
+def _period_name(days: int) -> str:
+    if days < 30:
+        return f"{days // 7} недели дневника"
+    months = round(days / 30, 1)
+    word = "месяца" if months < 5 else "месяцев"
+    return f"{months:g} {word} дневника".replace(".", ",")
+
+
+def _demo(days: int = DEFAULT_DAYS) -> dict:
+    timeline = _known_timeline(days)
+    links = [l for l in _known_links(days) if l.strength != "наблюдение"]
+    if not links:
+        return {
+            "links": [],
+            "period": _period_name(days),
+            "explain": "Данных пока мало. Чтобы что-то утверждать, нужно минимум семь дней "
+                       "с привычкой и семь без неё, а для проверки третьего фактора дней "
+                       "нужно ещё больше.",
+        }
+
+    window = min(40, max(14, days // 3))
+    experiment = Experiment.from_link(links[0], start=timeline.days[-window].day, days=window)
     verdict = evaluate(experiment, timeline)
+    confounded = sum(1 for l in links if l.confounder)
     return {
+        "period": _period_name(days),
+        "explain": f"Проверено {len(_known_links(days))} пар привычка-состояние, "
+                   f"осталось {len(links)}. Из них {confounded} объясняются другим фактором."
+                   if confounded else
+                   f"Проверено {len(_known_links(days))} пар привычка-состояние, "
+                   f"осталось {len(links)}.",
         "links": [{
             "text": f"«{l.factor}» → «{l.metric}»: {l.direction} на {abs(l.effect):.1f} балла",
             "detail": f"{'в тот же день' if l.lag_days == 0 else 'на следующий день'} · "
