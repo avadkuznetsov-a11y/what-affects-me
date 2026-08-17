@@ -62,7 +62,15 @@ PAGE = """<!doctype html>
  .src{font-size:12px;color:var(--soft);min-width:74px}
  .note{font-size:13px;color:var(--soft);display:block;margin-top:4px}
  .warn{color:#A5372F}
+ .banner{background:#FBF6E7;border-bottom:1px solid #EFE3BE;color:#6B5A22;font-size:14px;
+  padding:12px 24px;text-align:center;line-height:1.45}
+ .known{margin-top:18px;padding:16px 18px;background:#F4F9F6;border-left:3px solid var(--green)}
+ .known b{font-size:15px;display:block;margin-bottom:8px}
+ .known div{font-size:14.5px;color:var(--text);margin-bottom:6px}
+ .known .none{color:var(--soft)}
 </style></head><body>
+<div class="banner">Это прототип для заявки. Дневник за 120 дней придуман для показа,
+  связи в нём заложены заранее — так видно, что программа находит настоящее и отсеивает случайное.</div>
 <div class="wrap">
   <p class="eyebrow"><i></i>Прототип</p>
   <h1>Что на меня влияет</h1>
@@ -73,10 +81,11 @@ PAGE = """<!doctype html>
   <div class="row">
     <button onclick="parse()">Разобрать запись</button>
     <button class="ghost" id="mic" onclick="listen()">🎤 Наговорить</button>
-    <button class="ghost" onclick="demo()">Показать выводы за 120 дней</button>
+    <button class="ghost" onclick="demo()">Показать выводы за 4 месяца</button>
   </div>
-  <p class="hint" style="margin-top:10px">В продукте это голосовое в мессенджере. Здесь речь
-     распознаёт браузер — работает в Chrome. Попробуйте: «сходил в зал, вечером бодрый»,
+  <p class="hint" id="micnote" style="margin-top:10px;min-height:20px"></p>
+  <p class="hint">В продукте это голосовое в мессенджере. Здесь речь распознаёт сам браузер,
+     нужен Chrome и интернет. Попробуйте: «сходил в зал, вечером бодрый»,
      «перелёт, спал четыре часа», «не пил кофе, выспался отлично».</p>
 
   <div class="ring">
@@ -96,18 +105,49 @@ PAGE = """<!doctype html>
 function ringLabel(){
   for(const id of ['sleep','stress','steps']) document.getElementById(id+'v').textContent = document.getElementById(id).value;
 }
+let rec = null, listening = false;
+function micStatus(text){ document.getElementById('micnote').textContent = text || ''; }
+
 function listen(){
-  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
   const mic = document.getElementById('mic');
-  if(!Rec){ mic.textContent = 'браузер не умеет — откройте в Chrome'; return; }
-  const rec = new Rec();
-  rec.lang = 'ru-RU'; rec.interimResults = true;
-  mic.textContent = '🔴 говорите…';
+  if(listening){ listening = false; rec && rec.stop(); return; }
+
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!Rec){ micStatus('Этот браузер не умеет распознавать речь — откройте страницу в Chrome.'); return; }
+
+  rec = new Rec();
+  rec.lang = 'ru-RU';
+  rec.interimResults = true;
+  rec.continuous = true;            // иначе останавливается после первой же паузы
+
+  let heard = '';
+  rec.onstart = () => { listening = true; mic.textContent = '⏹ Стоп'; micStatus('Слушаю. Говорите, потом нажмите «Стоп».'); };
   rec.onresult = e => {
-    document.getElementById('text').value = Array.from(e.results).map(r => r[0].transcript).join(' ');
+    let finalText = '', interim = '';
+    for(let i = 0; i < e.results.length; i++){
+      (e.results[i].isFinal ? finalText += e.results[i][0].transcript + ' ' : interim = e.results[i][0].transcript);
+    }
+    heard = (finalText + interim).trim();
+    document.getElementById('text').value = heard;
   };
-  rec.onend = () => { mic.textContent = '🎤 Наговорить'; parse(); };
-  rec.onerror = () => { mic.textContent = '🎤 Наговорить'; };
+  rec.onerror = e => {
+    listening = false;
+    mic.textContent = '🎤 Наговорить';
+    const reasons = {
+      'not-allowed': 'Браузер не дал доступ к микрофону. Разрешите его в настройках сайта.',
+      'service-not-allowed': 'Браузер не дал доступ к микрофону.',
+      'no-speech': 'Не услышал речь. Нажмите ещё раз и говорите ближе к микрофону.',
+      'audio-capture': 'Микрофон не найден.',
+      'network': 'Распознаванию нужен интернет — оно идёт через сервис браузера.'
+    };
+    micStatus(reasons[e.error] || ('Не получилось: ' + e.error));
+  };
+  rec.onend = () => {
+    if(listening){ rec.start(); return; }   // пауза в речи — продолжаем слушать
+    mic.textContent = '🎤 Наговорить';
+    if(heard){ micStatus('Записал: «' + heard + '»'); parse(); }
+    else micStatus('');
+  };
   rec.start();
 }
 async function parse(){
@@ -121,22 +161,27 @@ async function parse(){
   const d = await r.json();
   const out = document.getElementById('out');
   if(!d.facts.length){ out.innerHTML = '<p class=hint>Ничего не распознал. Попробуйте назвать привычку и самочувствие: «пил кофе, спал пять часов».</p>'; return; }
+  const known = d.known.length
+    ? d.known.map(k => `<div>${k.text}<span class="note ${k.warn ? 'warn' : ''}">${k.cause}</span></div>`).join('')
+    : '<div class="none">Про эти привычки в дневнике пока нечего сказать: нужно минимум семь дней с ними и семь без.</div>';
+
   out.innerHTML = '<h2 style="margin-top:0">Что получилось за день</h2>' + d.facts.map(f =>
     `<div class="fact"><span class="src">${f.source}</span><span class="tag">${f.kind === 'factor' ? 'привычка' : 'состояние'}</span>
      <b>${f.name}</b><span>${f.kind === 'factor' ? (f.value ? 'было' : 'не было') : f.value + ' из 10'}</span></div>`).join('') +
-    '<p class="hint" style="margin-top:14px">Слова и показания прибора попали в один день. Дальше связи ищутся между всеми фактами сразу, независимо от источника.</p>';
+    `<div class="known"><b>Что об этом уже известно из вашего дневника</b>${known}</div>` +
+    '<p class="hint" style="margin-top:14px">Одна запись ничего не доказывает. Выводы появляются, когда таких дней набирается много — нажмите «Показать выводы за 120 дней».</p>';
 }
 async function demo(){
   const out = document.getElementById('out');
   out.innerHTML = '<p class=hint>Считаю…</p>';
   const r = await fetch('/demo');
   const d = await r.json();
-  out.innerHTML = '<h2 style="margin-top:0">Что нашлось за 120 дней</h2>' +
+  out.innerHTML = '<h2 style="margin-top:0">Что нашлось за 4 месяца дневника</h2>' +
     d.links.map(l => `<div class="link">${l.text}<em>${l.detail}</em><span class="note ${l.warn ? 'warn' : ''}">${l.cause}</span></div>`).join('') +
     `<h2>Проверка самой сильной связи</h2><div class="ex"><b>${d.experiment.hypothesis}</b><ul>` +
     d.experiment.plan.map(s => `<li>${s}</li>`).join('') +
     `</ul><div class="verdict">${d.verdict.status}</div><p style="margin:6px 0 0">${d.verdict.text}</p></div>` +
-    '<p class="hint" style="margin-top:16px">Дневник для примера сгенерирован. В него заранее заложены две настоящие связи и один фактор-пустышка — «сладкое». Программа должна найти первые две и промолчать про третий.</p>';
+    '<p class="hint" style="margin-top:16px">Дневник придуман для показа: 120 дней, то есть около четырёх месяцев. Столько нужно, чтобы проверить третий фактор — дни делятся на части, и в каждой должно остаться достаточно наблюдений. Первые выводы у живого человека появляются раньше, недели через три: для простой связи хватает семи дней с привычкой и семи без.</p>';
 }
 </script></body></html>"""
 
@@ -171,7 +216,16 @@ class Handler(BaseHTTPRequestHandler):
         facts = [{"kind": f.kind, "name": f.name, "value": f.value,
                   "source": "с кольца" if f.source in DEVICE_SOURCES else "из рассказа"}
                  for f in timeline.days[0].facts]
-        self._send(json.dumps({"facts": facts}, ensure_ascii=False).encode("utf-8"),
+
+        mentioned = {f.name for f in timeline.days[0].facts
+                     if f.kind == "factor" and f.value > 0}
+        known = [{
+            "text": f"«{l.factor}» → «{l.metric}»: {l.direction} на {abs(l.effect):.1f} балла "
+                    f"({'на следующий день' if l.lag_days else 'в тот же день'}, {l.strength})",
+            "cause": l.causal_note,
+            "warn": bool(l.confounder),
+        } for l in _known_links() if l.factor in mentioned and l.strength != "наблюдение"]
+        self._send(json.dumps({"facts": facts, "known": known}, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
     def log_message(self, *args):
@@ -185,9 +239,25 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+_CACHE: dict[str, object] = {}
+
+
+def _known_timeline():
+    """Дневник за 120 дней считаем один раз: перестановочный тест не быстрый."""
+    if "timeline" not in _CACHE:
+        _CACHE["timeline"] = derive_factors(build(days=120))
+    return _CACHE["timeline"]
+
+
+def _known_links():
+    if "links" not in _CACHE:
+        _CACHE["links"] = find_links(_known_timeline())
+    return _CACHE["links"]
+
+
 def _demo() -> dict:
-    timeline = derive_factors(build(days=120))
-    links = [l for l in find_links(timeline) if l.strength != "наблюдение"]
+    timeline = _known_timeline()
+    links = [l for l in _known_links() if l.strength != "наблюдение"]
     experiment = Experiment.from_link(links[0], start=timeline.days[-40].day, days=40)
     verdict = evaluate(experiment, timeline)
     return {
