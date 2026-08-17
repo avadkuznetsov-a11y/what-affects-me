@@ -1,301 +1,381 @@
 """
-Локальная страница, чтобы прототип можно было потрогать руками.
+Локальная страница-диалог: так же, как продукт будет работать в мессенджере.
 
 Запуск:  python3 -m web.server
-Откроется на http://127.0.0.1:8765 — ни ключей, ни интернета не нужно.
+Откроется на http://127.0.0.1:8765 - ни ключей, ни интернета не нужно.
 
-Наружу ничего не отдаём и никуда не ходим: сервер слушает только 127.0.0.1.
+Человек пишет про свой день, программа отвечает: что записала, чего не хватает
+и что уже известно. Когда данных достаточно, показывает выводы. Сервер слушает
+только 127.0.0.1 и наружу ничего не отдаёт.
 """
 from __future__ import annotations
 
 import json
-from datetime import date
 import threading
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from demo.generate import build
+from wam.derive import DEVICE_SOURCES, derive_factors
 from wam.experiments import Experiment, evaluate
-from wam.derive import derive_factors
 from wam.extract import RuleExtractor
 from wam.insights import find_links
-from wam.phrases import say, basis, next_step
-from wam.questions import next_question
-from wam.schema import Timeline
+from wam.phrases import basis, next_step, say
+from wam.questions import apply_answer, next_question
+from wam.schema import DayRecord, Timeline
 from wam.wearables import SberRingSource, merge_into
-from wam.derive import DEVICE_SOURCES
 
 HOST, PORT = "127.0.0.1", 8765
+DEFAULT_DAYS = 120
 
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Что на меня влияет — прототип</title>
+<title>Что на меня влияет - прототип</title>
 <style>
  :root{--ink:#1A1A1A;--text:#4B4F52;--soft:#8A8F93;--line:#E6E8E9;--green:#1F8A5B;--bg:#fff}
  *{box-sizing:border-box}
- body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
- .wrap{max-width:820px;margin:0 auto;padding:48px 24px 80px}
+ body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+ .banner{background:#FBF6E7;border-bottom:1px solid #EFE3BE;color:#6B5A22;font-size:14px;padding:11px 24px;text-align:center}
+ .wrap{max-width:760px;margin:0 auto;padding:40px 24px 60px}
  .eyebrow{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:700;letter-spacing:.13em;
-  text-transform:uppercase;color:var(--green);margin:0 0 18px}
+  text-transform:uppercase;color:var(--green);margin:0 0 16px}
  .eyebrow i{width:7px;height:7px;border-radius:50%;background:var(--green)}
- h1{font-size:38px;line-height:1.1;letter-spacing:-.02em;font-weight:800;margin:0 0 14px}
- h2{font-size:19px;margin:38px 0 10px}
- p{color:var(--text);margin:0 0 16px}
- textarea{width:100%;min-height:96px;padding:14px;font:inherit;border:1px solid var(--line);border-radius:8px;resize:vertical}
- button{font:inherit;font-weight:600;background:var(--green);color:#fff;border:0;border-radius:8px;padding:11px 22px;cursor:pointer}
- button.ghost{background:#fff;color:var(--green);border:1px solid var(--green)}
- .row{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
- .out{margin-top:22px;border-top:1px solid var(--line);padding-top:20px}
- .fact{display:flex;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:15px}
- .fact b{min-width:150px}
- .fact span{color:var(--text)}
- .tag{font-size:12px;color:var(--soft);min-width:70px}
- .link{padding:14px 16px;border-left:3px solid var(--green);background:#F7F8F8;margin-bottom:10px;font-size:15px}
- .link em{font-style:normal;color:var(--soft);font-size:13px;display:block;margin-top:4px}
+ h1{font-size:34px;line-height:1.1;letter-spacing:-.02em;font-weight:800;margin:0 0 12px}
+ p{color:var(--text);margin:0 0 14px}
  .hint{font-size:14px;color:var(--soft)}
- .ex{border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin-top:12px}
- .ex li{color:var(--text);font-size:15px;margin-bottom:6px}
- .verdict{font-weight:700;color:var(--green);margin-top:10px}
- .ring{margin-top:22px;padding:16px 18px;border:1px solid var(--line);border-radius:8px}
- .ring b{font-size:15px}
- .ringrow{display:flex;gap:22px;flex-wrap:wrap;margin-top:10px}
- .ringrow label{font-size:14px;color:var(--text);display:flex;align-items:center;gap:8px}
- .ringrow input{width:120px}
- .ringrow span{font-weight:700;color:var(--ink);min-width:42px}
- .src{font-size:12px;color:var(--soft);min-width:74px}
- .note{font-size:13px;color:var(--soft);display:block;margin-top:4px}
- .warn{color:#A5372F}
- .banner{background:#FBF6E7;border-bottom:1px solid #EFE3BE;color:#6B5A22;font-size:14px;
-  padding:12px 24px;text-align:center;line-height:1.45}
- .known{margin-top:18px;padding:16px 18px;background:#F4F9F6;border-left:3px solid var(--green)}
- .known b{font-size:15px;display:block;margin-bottom:8px}
- .known div{font-size:14.5px;color:var(--text);margin-bottom:6px}
- .known .none{color:var(--soft)}
- .sources{display:flex;flex-direction:column;gap:8px;margin-top:12px}
- .sources label{display:flex;align-items:baseline;gap:10px;font-size:14.5px}
- .sources label.off{color:var(--soft)}
+
+ .chat{border:1px solid var(--line);border-radius:12px;margin-top:22px;overflow:hidden}
+ .feed{padding:18px;display:flex;flex-direction:column;gap:12px;max-height:58vh;overflow-y:auto}
+ .msg{max-width:88%;padding:11px 14px;border-radius:14px;font-size:15px;line-height:1.45;white-space:pre-line}
+ .msg.me{align-self:flex-end;background:var(--green);color:#fff}
+ .msg.bot{background:#F4F6F7}
+ .msg.ask{background:#FBF6E7;border-left:3px solid #D9B84C}
+ .msg.result{background:#F1F8F4;border-left:3px solid var(--green)}
+ .msg small{display:block;margin-top:6px;color:var(--soft);font-size:13px}
+ .msg.me small{color:rgba(255,255,255,.75)}
+ .bar{display:flex;gap:10px;padding:14px 18px;border-top:1px solid var(--line);background:#FAFBFB}
+ .bar input{flex:1;padding:12px 14px;font:inherit;border:1px solid var(--line);border-radius:10px}
+ button{font:inherit;font-weight:600;background:var(--green);color:#fff;border:0;border-radius:10px;padding:12px 20px;cursor:pointer}
+ button.ghost{background:#fff;color:var(--green);border:1px solid var(--green)}
+ button:disabled{opacity:.5;cursor:default}
+
+ .side{margin-top:26px;padding:18px;border:1px solid var(--line);border-radius:12px}
+ .side b{font-size:15px}
+ .sources{display:flex;flex-direction:column;gap:7px;margin:12px 0 18px}
+ .sources label{display:flex;align-items:baseline;gap:9px;font-size:14px;color:var(--soft)}
+ .sources label.on{color:var(--ink)}
  .sources em{font-style:normal;font-size:13px;color:var(--soft)}
- .sources label.on span{font-weight:600;color:var(--ink)}
- .ask{margin-top:18px;padding:16px 18px;background:#FBF6E7;border-left:3px solid #D9B84C}
- .ask b{display:block;font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:#8A6D1F;margin-bottom:6px}
- .ask input{width:100%;margin-top:10px;padding:10px 12px;font:inherit;border:1px solid #E4D8B0;border-radius:8px}
- .ask button{margin-top:10px}
- .period{display:inline-flex;gap:8px;align-items:center}
- .period select{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff}
+ .ringrow{display:flex;gap:20px;flex-wrap:wrap}
+ .ringrow label{font-size:14px;color:var(--text);display:flex;align-items:center;gap:8px}
+ .ringrow input{width:110px}
+ .ringrow span{font-weight:700;min-width:44px}
+ .tools{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;align-items:center}
+ select{font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}
 </style></head><body>
-<div class="banner">Это прототип для заявки. Дневник за 120 дней придуман для показа,
-  связи в нём заложены заранее — так видно, что программа находит настоящее и отсеивает случайное.</div>
+<div class="banner">Это прототип для заявки. Дневник за выбранный срок придуман для показа:
+ связи в нём заложены заранее, чтобы было видно, что программа находит настоящее и отсеивает случайное.</div>
+
 <div class="wrap">
   <p class="eyebrow"><i></i>Прототип</p>
   <h1>Что на меня влияет</h1>
-  <p>Напишите, как прошёл день — обычными словами, как в переписке. Программа разберёт
-     фразу на привычки и самочувствие. Всё считается тут же на вашем компьютере.</p>
+  <p>Расскажите про свой день обычными словами - так же, как написали бы в мессенджере.
+     Программа спросит, если чего-то не хватает, и скажет, что уже знает про ваши привычки.</p>
 
-  <textarea id="text">Опять пил кофе часов в пять вечера, потом до ночи листал ленту. Спал часов пять, с утра тревога какая-то.</textarea>
-  <div class="row">
-    <button onclick="parse()">Разобрать запись</button>
-    <button class="ghost" id="mic" onclick="listen()">🎤 Наговорить</button>
-    <span class="period">
-      <select id="days">
-        <option value="21">3 недели</option>
-        <option value="45">1,5 месяца</option>
-        <option value="90">3 месяца</option>
-        <option value="120" selected>4 месяца</option>
-        <option value="180">полгода</option>
-      </select>
-      <button class="ghost" onclick="demo()">Показать выводы</button>
-    </span>
+  <div class="chat">
+    <div class="feed" id="feed"></div>
+    <div class="bar">
+      <input id="text" placeholder="Например: пил кофе часов в пять, спал часов пять" onkeydown="if(event.key==='Enter')send()">
+      <button class="ghost" id="mic" onclick="listen()" title="Наговорить">🎤</button>
+      <button id="send" onclick="send()">Отправить</button>
+    </div>
   </div>
-  <p class="hint" id="micnote" style="margin-top:10px;min-height:20px"></p>
-  <p class="hint">В продукте это голосовое в мессенджере. Здесь речь распознаёт сам браузер,
-     нужен Chrome и интернет. Попробуйте: «сходил в зал, вечером бодрый»,
-     «перелёт, спал четыре часа», «не пил кофе, выспался отлично».</p>
+  <p class="hint" id="micnote" style="min-height:18px;margin-top:8px"></p>
 
-  <div class="ring">
+  <div class="side">
     <b>Источники данных</b>
     <div class="sources">
-      <label class="on"><input type="checkbox" id="src-ring" checked onchange="parse()">
-        <span>Умное кольцо Sber</span><em>сон, стресс, шаги</em></label>
-      <label class="off"><input type="checkbox" disabled>
-        <span>Apple Health</span><em>разбор написан, подключение в программе</em></label>
-      <label class="off"><input type="checkbox" disabled>
-        <span>Health Connect</span><em>для Android, тот же формат</em></label>
-      <label class="off"><input type="checkbox" disabled>
-        <span>Календарь</span><em>встречи и перелёты как факторы</em></label>
-      <label class="off"><input type="checkbox" disabled>
-        <span>Погода и город</span><em>давление, смена часового пояса</em></label>
+      <label class="on"><input type="checkbox" id="src-ring" checked><span>Умное кольцо Sber</span><em>сон, стресс, шаги</em></label>
+      <label><input type="checkbox" disabled><span>Apple Health</span><em>разбор написан, подключение в программе</em></label>
+      <label><input type="checkbox" disabled><span>Health Connect</span><em>для Android, тот же формат</em></label>
+      <label><input type="checkbox" disabled><span>Календарь</span><em>встречи и перелёты как факторы</em></label>
+      <label><input type="checkbox" disabled><span>Погода и город</span><em>давление, смена часового пояса</em></label>
     </div>
-
-    <b style="display:block;margin-top:18px">Что кольцо намеряло за этот день</b>
-    <div class="ringrow">
-      <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="ringLabel()"><span id="sleepv">41</span></label>
-      <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="ringLabel()"><span id="stressv">72</span></label>
-      <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="ringLabel()"><span id="stepsv">3000</span></label>
+    <b>Что кольцо намеряло сегодня</b>
+    <div class="ringrow" style="margin-top:10px">
+      <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
+      <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
+      <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
     </div>
-    <p class="hint" style="margin:10px 0 0">Эти цифры человек не вводит, они приходят с прибора.
-       Снимите галочку с кольца и разберите запись заново — станет видно, сколько фактов
-       пропадает без него.</p>
+    <div class="tools">
+      <select id="days">
+        <option value="21">дневник за 3 недели</option>
+        <option value="45">за 1,5 месяца</option>
+        <option value="90">за 3 месяца</option>
+        <option value="120" selected>за 4 месяца</option>
+        <option value="180">за полгода</option>
+      </select>
+      <button class="ghost" onclick="summary()">Показать все выводы</button>
+      <button class="ghost" onclick="reset()">Начать заново</button>
+    </div>
   </div>
-
-  <div class="out" id="out"><p class="hint">Здесь появится результат.</p></div>
 </div>
+
 <script>
-function sendAnswer(){
-  const answer = document.getElementById('answer').value.trim();
-  if(!answer) return;
+function lbl(){ for(const id of ['sleep','stress','steps']) document.getElementById(id+'v').textContent = document.getElementById(id).value; }
+
+function add(kind, text, note){
+  const feed = document.getElementById('feed');
+  const div = document.createElement('div');
+  div.className = 'msg ' + kind;
+  div.textContent = text;
+  if(note){ const s = document.createElement('small'); s.textContent = note; div.appendChild(s); }
+  feed.appendChild(div);
+  feed.scrollTop = feed.scrollHeight;
+}
+
+async function send(){
   const field = document.getElementById('text');
-  field.value = field.value.trim() + '. ' + answer;
-  parse();
-}
-function ringLabel(){
-  for(const id of ['sleep','stress','steps']) document.getElementById(id+'v').textContent = document.getElementById(id).value;
-}
-let rec = null, listening = false;
-function micStatus(text){ document.getElementById('micnote').textContent = text || ''; }
+  const text = field.value.trim();
+  if(!text) return;
+  add('me', text);
+  field.value = '';
+  document.getElementById('send').disabled = true;
 
-function listen(){
-  const mic = document.getElementById('mic');
-  if(listening){ listening = false; rec && rec.stop(); return; }
-
-  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!Rec){ micStatus('Этот браузер не умеет распознавать речь — откройте страницу в Chrome.'); return; }
-
-  rec = new Rec();
-  rec.lang = 'ru-RU';
-  rec.interimResults = true;
-  rec.continuous = true;            // иначе останавливается после первой же паузы
-
-  let heard = '';
-  rec.onstart = () => { listening = true; mic.textContent = '⏹ Стоп'; micStatus('Слушаю. Говорите, потом нажмите «Стоп».'); };
-  rec.onresult = e => {
-    let finalText = '', interim = '';
-    for(let i = 0; i < e.results.length; i++){
-      (e.results[i].isFinal ? finalText += e.results[i][0].transcript + ' ' : interim = e.results[i][0].transcript);
-    }
-    heard = (finalText + interim).trim();
-    document.getElementById('text').value = heard;
-  };
-  rec.onerror = e => {
-    listening = false;
-    mic.textContent = '🎤 Наговорить';
-    const reasons = {
-      'not-allowed': 'Браузер не дал доступ к микрофону. Разрешите его в настройках сайта.',
-      'service-not-allowed': 'Браузер не дал доступ к микрофону.',
-      'no-speech': 'Не услышал речь. Нажмите ещё раз и говорите ближе к микрофону.',
-      'audio-capture': 'Микрофон не найден.',
-      'network': 'Распознаванию нужен интернет — оно идёт через сервис браузера.'
-    };
-    micStatus(reasons[e.error] || ('Не получилось: ' + e.error));
-  };
-  rec.onend = () => {
-    if(listening){ rec.start(); return; }   // пауза в речи — продолжаем слушать
-    mic.textContent = '🎤 Наговорить';
-    if(heard){ micStatus('Записал: «' + heard + '»'); parse(); }
-    else micStatus('');
-  };
-  rec.start();
-}
-async function parse(){
-  const out = document.getElementById('out');
-  out.innerHTML = '<p class=hint>Разбираю…</p>';
-  const text = document.getElementById('text').value;
   const ring = document.getElementById('src-ring').checked ? {
     sleep_score: +document.getElementById('sleep').value,
     stress_level: +document.getElementById('stress').value,
     steps: +document.getElementById('steps').value
   } : null;
-  const r = await fetch('/parse', {method:'POST', body: JSON.stringify({text, ring})});
-  const d = await r.json();
-  if(!d.facts.length){
-    out.innerHTML = `<div class="ask"><b>Уточню</b>${d.question || 'Попробуйте назвать привычку и самочувствие: «пил кофе, спал пять часов».'}</div>`;
-    return;
-  }
-  const known = d.known.length
-    ? d.known.map(k => `<div>${k.text}<span class="note ${k.warn ? 'warn' : ''}">${k.cause}</span></div>`).join('')
-    : '<div class="none">Про эти привычки в дневнике пока нечего сказать: нужно минимум семь дней с ними и семь без.</div>';
 
-  out.innerHTML = '<h2 style="margin-top:0">Что получилось за день</h2>' + d.facts.map(f =>
-    `<div class="fact"><span class="src">${f.source}</span><span class="tag">${f.kind === 'factor' ? 'привычка' : 'состояние'}</span>
-     <b>${f.name}</b><span>${f.kind === 'factor' ? (f.value ? 'было' : 'не было') : f.value + ' из 10'}</span></div>`).join('') +
-    (d.question ? `<div class="ask"><b>Уточню</b>${d.question}
-       <input id="answer" placeholder="ответьте парой слов" onkeydown="if(event.key==='Enter')sendAnswer()">
-       <button onclick="sendAnswer()">Ответить</button></div>` : '') +
-    `<div class="known"><b>Что об этом уже известно из вашего дневника</b>${known}</div>` +
-    '<p class="hint" style="margin-top:14px">Одна запись ничего не доказывает. Выводы появляются, когда таких дней набирается много.</p>';
-}
-async function demo(){
-  const out = document.getElementById('out');
-  const days = document.getElementById('days').value;
-  out.innerHTML = '<p class=hint>Считаю. На длинных периодах это занимает несколько секунд.</p>';
-  const r = await fetch('/demo?days=' + days);
-  const d = await r.json();
-  if(!d.links.length){
-    out.innerHTML = `<h2 style="margin-top:0">За ${d.period} выводов нет</h2>` +
-      `<p>${d.explain}</p><p class="hint">Возьмите период подлиннее и нажмите ещё раз.</p>`;
-    return;
+  try {
+    const r = await fetch('/say', {method:'POST', body: JSON.stringify({text, ring, days: +document.getElementById('days').value})});
+    const d = await r.json();
+    for(const m of d.messages) add(m.kind, m.text, m.note);
+  } catch(e) {
+    add('bot', 'Не получилось связаться с программой: ' + e.message);
   }
-  out.innerHTML = `<h2 style="margin-top:0">Что нашлось за ${d.period}</h2>` +
-    `<p class="hint" style="margin:-6px 0 14px">${d.explain}</p>` +
-    d.links.map(l => `<div class="link">${l.text}<em>${l.detail}</em><span class="note ${l.warn ? 'warn' : ''}">${l.cause}</span></div>`).join('') +
-    `<h2>Проверка самой сильной связи</h2><div class="ex"><b>${d.experiment.hypothesis}</b><ul>` +
-    d.experiment.plan.map(s => `<li>${s}</li>`).join('') +
-    `</ul><div class="verdict">${d.verdict.status}</div><p style="margin:6px 0 0">${d.verdict.text}</p></div>` +
-    '<p class="hint" style="margin-top:16px">Дневник придуман для показа: 120 дней, то есть около четырёх месяцев. Столько нужно, чтобы проверить третий фактор — дни делятся на части, и в каждой должно остаться достаточно наблюдений. Первые выводы у живого человека появляются раньше, недели через три: для простой связи хватает семи дней с привычкой и семи без.</p>';
+  document.getElementById('send').disabled = false;
+  field.focus();
 }
+
+async function summary(){
+  add('me', 'Что уже известно?');
+  const r = await fetch('/summary?days=' + document.getElementById('days').value);
+  const d = await r.json();
+  for(const m of d.messages) add(m.kind, m.text, m.note);
+}
+
+async function reset(){
+  await fetch('/reset');
+  document.getElementById('feed').innerHTML = '';
+  hello();
+}
+
+function hello(){
+  add('bot', 'Расскажите, как прошёл день. Например: «пил кофе часов в пять, спал часов пять, с утра тревожно».');
+}
+
+let rec = null, listening = false;
+function listen(){
+  const mic = document.getElementById('mic');
+  const note = document.getElementById('micnote');
+  if(listening){ listening = false; rec && rec.stop(); return; }
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if(!Rec){ note.textContent = 'Этот браузер не умеет распознавать речь - откройте страницу в Chrome.'; return; }
+  rec = new Rec(); rec.lang = 'ru-RU'; rec.interimResults = true; rec.continuous = true;
+  let heard = '';
+  rec.onstart = () => { listening = true; mic.textContent = '⏹'; note.textContent = 'Слушаю. Говорите, потом нажмите стоп.'; };
+  rec.onresult = e => {
+    let finalText = '', interim = '';
+    for(let i = 0; i < e.results.length; i++){
+      e.results[i].isFinal ? finalText += e.results[i][0].transcript + ' ' : interim = e.results[i][0].transcript;
+    }
+    heard = (finalText + interim).trim();
+    document.getElementById('text').value = heard;
+  };
+  rec.onerror = e => {
+    listening = false; mic.textContent = '🎤';
+    const reasons = {'not-allowed':'Браузер не дал доступ к микрофону.','no-speech':'Не услышал речь, попробуйте ещё раз.',
+      'audio-capture':'Микрофон не найден.','network':'Распознаванию нужен интернет.'};
+    note.textContent = reasons[e.error] || ('Не получилось: ' + e.error);
+  };
+  rec.onend = () => {
+    if(listening){ rec.start(); return; }
+    mic.textContent = '🎤'; note.textContent = '';
+    if(heard) send();
+  };
+  rec.start();
+}
+
+hello();
 </script></body></html>"""
 
+
+# ── состояние разговора ───────────────────────────────────────────────────
+
+class Session:
+    """Один разговор: сегодняшняя запись и вопрос, на который ждём ответ."""
+
+    def __init__(self) -> None:
+        self.record = DayRecord(day=date.today())
+        self.pending: str | None = None
+
+    def reset(self) -> None:
+        self.record = DayRecord(day=date.today())
+        self.pending = None
+
+
+SESSION = Session()
+_CACHE: dict[int, tuple] = {}
+
+
+def _diary(days: int = DEFAULT_DAYS):
+    """Придуманный дневник и найденные в нём связи. Считаем один раз на срок."""
+    if days not in _CACHE:
+        timeline = derive_factors(build(days=days))
+        _CACHE[days] = (timeline, find_links(timeline))
+    return _CACHE[days]
+
+
+def _facts_note(record: DayRecord) -> str:
+    """
+    Показываем только то, что было, и сами показатели. Строки вида
+    «много двигался: не было» человеку не нужны - это шум.
+    """
+    habits, metrics = [], []
+    for fact in record.facts:
+        mark = " (с кольца)" if fact.source in DEVICE_SOURCES else ""
+        if fact.kind == "factor":
+            if fact.value > 0:
+                habits.append(f"{fact.name}{mark}")
+            elif fact.source not in DEVICE_SOURCES:
+                habits.append(f"{fact.name}: не было")
+        else:
+            metrics.append(f"{fact.name} {fact.value:g} из 10{mark}")
+
+    lines = []
+    if habits:
+        lines.append("Привычки: " + ", ".join(dict.fromkeys(habits)))
+    if metrics:
+        lines.append("Самочувствие: " + ", ".join(dict.fromkeys(metrics)))
+    return "\n".join(lines)
+
+
+def _handle(text: str, ring: dict | None, days: int) -> list[dict]:
+    """Один шаг разговора. Возвращает сообщения для ленты."""
+    _, links = _diary(days)
+    messages: list[dict] = []
+
+    if SESSION.pending:
+        # Это ответ на заданный вопрос: он дополняет сегодняшнюю запись
+        before = _metrics_snapshot(SESSION.record)
+        apply_answer(SESSION.record, SESSION.pending, text)
+        if _metrics_snapshot(SESSION.record) == before:
+            # ответ не понят - разбираем его как обычную фразу
+            parsed = RuleExtractor().extract(text, SESSION.record.day)
+            SESSION.record.facts.extend(parsed.facts)
+        SESSION.pending = None
+    else:
+        parsed = RuleExtractor().extract(text, SESSION.record.day)
+        SESSION.record.facts.extend(parsed.facts)
+
+    if ring:
+        day_timeline = Timeline()
+        day_timeline.add(SESSION.record)
+        merge_into(day_timeline, SberRingSource().read([{**ring, "date": SESSION.record.day.isoformat()}]))
+        derive_factors(day_timeline)
+
+    if not SESSION.record.facts:
+        SESSION.pending = next_question(SESSION.record)
+        return [{"kind": "ask", "text": SESSION.pending}]
+
+    messages.append({"kind": "bot", "text": "Записал:", "note": _facts_note(SESSION.record)})
+
+    question = next_question(SESSION.record, links)
+    if question:
+        SESSION.pending = question
+        messages.append({"kind": "ask", "text": question})
+        return messages
+
+    messages.append({"kind": "bot", "text": "Картина дня понятна. Смотрю, что об этом "
+                                            "говорит ваш дневник."})
+    messages.extend(_conclusions(SESSION.record, links))
+    return messages
+
+
+def _metrics_snapshot(record: DayRecord) -> dict:
+    return {f.name: f.value for f in record.facts if f.kind == "metric"}
+
+
+def _conclusions(record: DayRecord, links) -> list[dict]:
+    mentioned = {f.name for f in record.facts if f.kind == "factor" and f.value > 0}
+    found = [l for l in links if l.factor in mentioned and l.strength != "наблюдение"]
+    if not found:
+        return [{"kind": "bot", "text": "Про эти привычки выводов пока нет: нужно хотя бы семь "
+                                        "дней с ними и семь без. Продолжайте записывать."}]
+    return [{"kind": "result", "text": say(l), "note": f"{basis(l)} {next_step(l)}"} for l in found]
+
+
+def _summary(days: int) -> list[dict]:
+    timeline, links = _diary(days)
+    strong = [l for l in links if l.strength != "наблюдение"]
+    period = f"{days} дней" if days < 60 else f"{round(days / 30)} месяца"
+
+    if not strong:
+        return [{"kind": "bot", "text": f"За {period} ничего надёжного не набралось. "
+                                        "Это тоже ответ: случайных совпадений не показываю."}]
+
+    messages = [{
+        "kind": "bot",
+        "text": f"За {period} проверено {len(links)} пар «привычка - состояние». "
+                f"Осталось {len(strong)}, из них {sum(1 for l in strong if l.confounder)} "
+                f"объясняются другим фактором.",
+    }]
+    messages += [{"kind": "result", "text": say(l), "note": f"{basis(l)} {next_step(l)}"}
+                 for l in strong]
+
+    best = next((l for l in strong if not l.confounder), None)
+    if best:
+        window = min(40, max(14, days // 3))
+        experiment = Experiment.from_link(best, start=timeline.days[-window].day, days=window)
+        verdict = evaluate(experiment, timeline)
+        messages.append({"kind": "bot",
+                         "text": "Проверка сильнейшей связи:\n" + "\n".join(experiment.plan),
+                         "note": verdict.text})
+    return messages
+
+
+# ── HTTP ──────────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
             self._send(PAGE.encode("utf-8"), "text/html; charset=utf-8")
-        elif self.path.startswith("/demo"):
-            days = 120
-            if "days=" in self.path:
-                try:
-                    days = max(14, min(365, int(self.path.split("days=")[1].split("&")[0])))
-                except ValueError:
-                    pass
-            self._send(json.dumps(_demo(days), ensure_ascii=False).encode("utf-8"),
-                       "application/json; charset=utf-8")
+        elif self.path.startswith("/summary"):
+            self._json({"messages": _summary(_days_param(self.path))})
+        elif self.path == "/reset":
+            SESSION.reset()
+            self._json({"ok": True})
         else:
             self.send_error(404)
 
     def do_POST(self):
-        if self.path != "/parse":
+        if self.path != "/say":
             self.send_error(404)
             return
         length = int(self.headers.get("Content-Length", 0))
         payload = json.loads(self.rfile.read(length) or b"{}")
-        today = date.today()
-
-        timeline = Timeline()
-        timeline.add(RuleExtractor().extract(payload.get("text", ""), today))
-
-        ring = payload.get("ring") or {}
-        if ring:
-            ring["date"] = today.isoformat()
-            merge_into(timeline, SberRingSource().read([ring]))
-            derive_factors(timeline)
-
-        facts = [{"kind": f.kind, "name": f.name, "value": f.value,
-                  "source": "с кольца" if f.source in DEVICE_SOURCES else "из рассказа"}
-                 for f in timeline.days[0].facts]
-
-        mentioned = {f.name for f in timeline.days[0].facts
-                     if f.kind == "factor" and f.value > 0}
-        known = [{
-            "text": say(l),
-            "cause": basis(l),
-            "warn": bool(l.confounder),
-        } for l in _known_links() if l.factor in mentioned and l.strength != "наблюдение"]
-        question = next_question(timeline.days[0], _known_links())
-        self._send(json.dumps({"facts": facts, "known": known, "question": question},
-                              ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+        messages = _handle(payload.get("text", ""), payload.get("ring"),
+                           int(payload.get("days") or DEFAULT_DAYS))
+        self._json({"messages": messages})
 
     def log_message(self, *args):
-        pass  # не засоряем терминал
+        pass
+
+    def _json(self, data):
+        self._send(json.dumps(data, ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8")
 
     def _send(self, body: bytes, content_type: str):
         self.send_response(200)
@@ -305,69 +385,19 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-_CACHE: dict[int, tuple] = {}
-DEFAULT_DAYS = 120
-
-
-def _known_timeline(days: int = DEFAULT_DAYS):
-    """Считаем один раз на каждый период: перестановочный тест не быстрый."""
-    if days not in _CACHE:
-        timeline = derive_factors(build(days=days))
-        _CACHE[days] = (timeline, find_links(timeline))
-    return _CACHE[days][0]
-
-
-def _known_links(days: int = DEFAULT_DAYS):
-    _known_timeline(days)
-    return _CACHE[days][1]
-
-
-def _period_name(days: int) -> str:
-    if days < 30:
-        return f"{days // 7} недели дневника"
-    months = round(days / 30, 1)
-    word = "месяца" if months < 5 else "месяцев"
-    return f"{months:g} {word} дневника".replace(".", ",")
-
-
-def _demo(days: int = DEFAULT_DAYS) -> dict:
-    timeline = _known_timeline(days)
-    links = [l for l in _known_links(days) if l.strength != "наблюдение"]
-    if not links:
-        return {
-            "links": [],
-            "period": _period_name(days),
-            "explain": "Данных пока мало. Чтобы что-то утверждать, нужно минимум семь дней "
-                       "с привычкой и семь без неё, а для проверки третьего фактора дней "
-                       "нужно ещё больше.",
-        }
-
-    window = min(40, max(14, days // 3))
-    experiment = Experiment.from_link(links[0], start=timeline.days[-window].day, days=window)
-    verdict = evaluate(experiment, timeline)
-    confounded = sum(1 for l in links if l.confounder)
-    return {
-        "period": _period_name(days),
-        "explain": f"Проверено {len(_known_links(days))} пар привычка-состояние, "
-                   f"осталось {len(links)}. Из них {confounded} объясняются другим фактором."
-                   if confounded else
-                   f"Проверено {len(_known_links(days))} пар привычка-состояние, "
-                   f"осталось {len(links)}.",
-        "links": [{
-            "text": say(l),
-            "detail": basis(l),
-            "cause": next_step(l),
-            "warn": bool(l.confounder),
-        } for l in links],
-        "experiment": {"hypothesis": experiment.hypothesis, "plan": experiment.plan},
-        "verdict": {"status": verdict.status.capitalize(), "text": verdict.text},
-    }
+def _days_param(path: str, default: int = DEFAULT_DAYS) -> int:
+    if "days=" not in path:
+        return default
+    try:
+        return max(14, min(365, int(path.split("days=")[1].split("&")[0])))
+    except ValueError:
+        return default
 
 
 def main() -> None:
-    threading.Thread(target=_known_links, daemon=True).start()  # прогрев, чтобы первый разбор не ждал
+    threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Откройте http://{HOST}:{PORT} — остановить: Ctrl+C")
+    print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -70,19 +70,37 @@ def next_question(record: DayRecord, links: list[Link] | None = None) -> str | N
 def apply_answer(record: DayRecord, question: str, answer: str) -> DayRecord:
     """
     Разобрать ответ на уточняющий вопрос и дописать его в тот же день.
-    Ответ обычно короткий: «на 7», «часов шесть», «нормально».
+
+    Ответ короткий и без контекста: «на 7», «часов шесть», «нормально».
+    Поэтому сначала ищем в нём просто число - в ответе на вопрос со шкалой
+    это самый частый случай, - и только потом пробуем общий разбор.
     """
-    from .extract import RuleExtractor
+    import re
+
+    from .extract import RuleExtractor, Fact, _word_score
 
     metric = next((name for name, text in _ASK_METRIC.items() if text in question), "")
     if not metric:
         return record
 
-    # Подставляем название показателя, чтобы разбор понял, о чём речь
-    parsed = RuleExtractor().extract(f"{metric} {answer}", record.day)
-    value = parsed.metric(metric)
-    if value is not None:
-        record.facts = [f for f in record.facts if not (f.kind == "metric" and f.name == metric)]
-        parsed_fact = next(f for f in parsed.facts if f.kind == "metric" and f.name == metric)
-        record.add(parsed_fact)
+    value = None
+    lowered = answer.lower().strip()
+
+    if metric == "качество сна":
+        parsed = RuleExtractor().extract(f"спал {lowered}", record.day)
+        value = parsed.metric("качество сна")
+
+    if value is None:
+        number = re.search(r"\b(10|\d)\b", lowered)
+        if number:
+            value = float(number.group(1))
+
+    if value is None:
+        value = _word_score(lowered)
+
+    if value is None:
+        return record
+
+    record.facts = [f for f in record.facts if not (f.kind == "metric" and f.name == metric)]
+    record.add(Fact("metric", metric, max(0.0, min(10.0, value)), "diary", quote=answer))
     return record

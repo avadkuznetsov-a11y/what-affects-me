@@ -42,6 +42,8 @@ def derive_factors(timeline: Timeline) -> Timeline:
             value = record.metric(metric_name)
             if value is None:
                 continue
+            if record.factor(factor_name) is not None:
+                continue      # уже посчитано за этот день, второй раз не нужно
             hit = value < threshold if direction == "ниже" else value > threshold
             record.add(Fact("factor", factor_name, 1.0 if hit else 0.0, "wearable"))
     return timeline
