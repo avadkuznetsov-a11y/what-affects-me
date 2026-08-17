@@ -57,6 +57,17 @@ _WORD_SCORES: list[tuple[str, float]] = [
 
 _NEGATION = re.compile(r"\b(не|без|нет)\s+\w*", re.IGNORECASE)
 
+# Люди говорят «спал часов пять», а не «спал 5 часов»
+_WORD_NUMBERS = {
+    "один": 1, "два": 2, "две": 2, "три": 3, "четыре": 4, "пять": 5, "шесть": 6,
+    "семь": 7, "восемь": 8, "девять": 9, "десять": 10, "одиннадцать": 11, "двенадцать": 12,
+}
+
+# Если человек просто назвал плохое состояние и не поставил оценку —
+# считаем это низким баллом. Молчать в такой ситуации хуже, чем округлить:
+# «тревога какая-то» это точно не десятка.
+_NEGATIVE_BY_DEFAULT = {"тревога": 3.0, "головная боль": 3.0}
+
 
 class Extractor(Protocol):
     """Любой разборщик рассказа — правила или модель."""
@@ -84,7 +95,9 @@ class RuleExtractor:
             match = re.search(pattern, lowered)
             if not match:
                 continue
-            score = _score_near(lowered, match.start())
+            score = _score_near(lowered, match.start(), metric=name)
+            if score is None:
+                score = _NEGATIVE_BY_DEFAULT.get(name)
             if score is not None:
                 record.add(Fact("metric", name, score, "diary", quote=_around(text, match.start())))
 
@@ -133,7 +146,7 @@ def _around(text: str, index: int, width: int = 40) -> str:
     return text[start:start + width].strip()
 
 
-def _score_near(lowered: str, index: int, window: int = 60) -> float | None:
+def _score_near(lowered: str, index: int, window: int = 60, metric: str = "") -> float | None:
     """Оценка состояния рядом с упоминанием: цифрой («сон на 3») или словом."""
     fragment = lowered[max(0, index - window):index + window]
 
@@ -141,10 +154,28 @@ def _score_near(lowered: str, index: int, window: int = 60) -> float | None:
     if digits:
         return float(digits.group(1))
 
-    hours = re.search(r"(\d{1,2})\s*час", fragment)
-    if hours:  # «спал 5 часов» → шкала сна, где 8 часов это 10 баллов
+    # «спал 5 часов», «часов пять поспал» — это мера сна и только его:
+    # рядом стоящая «тревога» не должна получить оценку из часов
+    if metric != "качество сна":
+        return _word_score(fragment)
+
+    hours = re.search(r"(\d{1,2})\s*час", fragment) or re.search(r"час\w*\s+(\d{1,2})\b", fragment)
+    if hours:
         return min(10.0, round(float(hours.group(1)) / 8 * 10, 1))
 
+    # Рядом со словом «час» может оказаться и глагол («спал часов»), поэтому
+    # смотрим слова и справа, и слева, и берём первое, которое правда число.
+    for pattern in (r"час\w*\s+(\w+)", r"(\w+)\s+час"):
+        for match in re.finditer(pattern, fragment):
+            number = _WORD_NUMBERS.get(match.group(1))
+            if number:
+                return min(10.0, round(number / 8 * 10, 1))
+
+    return _word_score(fragment)
+
+
+def _word_score(fragment: str) -> float | None:
+    """Оценка словами: «ужасно», «нормально», «отлично»."""
     for pattern, score in _WORD_SCORES:
         if re.search(pattern, fragment):
             return score

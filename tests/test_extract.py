@@ -38,3 +38,15 @@ def test_llm_extractor_parses_wrapped_json():
 def test_llm_extractor_survives_garbage():
     record = LLMExtractor(lambda _: "модель ответила ерундой").extract("текст", date(2026, 8, 1))
     assert record.facts == []
+
+
+def test_hours_spelled_with_words():
+    """«спал часов пять» — так говорят чаще, чем «спал 5 часов»."""
+    record = RuleExtractor().extract("Спал часов пять, разбитый", date(2026, 8, 1))
+    assert record.metric("качество сна") == 6.2
+
+
+def test_bad_state_without_score():
+    """Назвал тревогу и не поставил оценку — это точно не хороший день."""
+    record = RuleExtractor().extract("Тревога какая-то весь день", date(2026, 8, 1))
+    assert record.metric("тревога") == 3.0
