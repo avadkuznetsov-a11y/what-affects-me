@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import json
 from datetime import date
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from demo.generate import build
 from wam.experiments import Experiment, evaluate
@@ -18,6 +19,7 @@ from wam.derive import derive_factors
 from wam.extract import RuleExtractor
 from wam.insights import find_links
 from wam.phrases import say, basis, next_step
+from wam.questions import next_question
 from wam.schema import Timeline
 from wam.wearables import SberRingSource, merge_into
 from wam.derive import DEVICE_SOURCES
@@ -74,6 +76,10 @@ PAGE = """<!doctype html>
  .sources label.off{color:var(--soft)}
  .sources em{font-style:normal;font-size:13px;color:var(--soft)}
  .sources label.on span{font-weight:600;color:var(--ink)}
+ .ask{margin-top:18px;padding:16px 18px;background:#FBF6E7;border-left:3px solid #D9B84C}
+ .ask b{display:block;font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:#8A6D1F;margin-bottom:6px}
+ .ask input{width:100%;margin-top:10px;padding:10px 12px;font:inherit;border:1px solid #E4D8B0;border-radius:8px}
+ .ask button{margin-top:10px}
  .period{display:inline-flex;gap:8px;align-items:center}
  .period select{font:inherit;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:#fff}
 </style></head><body>
@@ -134,6 +140,13 @@ PAGE = """<!doctype html>
   <div class="out" id="out"><p class="hint">Здесь появится результат.</p></div>
 </div>
 <script>
+function sendAnswer(){
+  const answer = document.getElementById('answer').value.trim();
+  if(!answer) return;
+  const field = document.getElementById('text');
+  field.value = field.value.trim() + '. ' + answer;
+  parse();
+}
 function ringLabel(){
   for(const id of ['sleep','stress','steps']) document.getElementById(id+'v').textContent = document.getElementById(id).value;
 }
@@ -183,6 +196,8 @@ function listen(){
   rec.start();
 }
 async function parse(){
+  const out = document.getElementById('out');
+  out.innerHTML = '<p class=hint>Разбираю…</p>';
   const text = document.getElementById('text').value;
   const ring = document.getElementById('src-ring').checked ? {
     sleep_score: +document.getElementById('sleep').value,
@@ -191,8 +206,10 @@ async function parse(){
   } : null;
   const r = await fetch('/parse', {method:'POST', body: JSON.stringify({text, ring})});
   const d = await r.json();
-  const out = document.getElementById('out');
-  if(!d.facts.length){ out.innerHTML = '<p class=hint>Ничего не распознал. Попробуйте назвать привычку и самочувствие: «пил кофе, спал пять часов».</p>'; return; }
+  if(!d.facts.length){
+    out.innerHTML = `<div class="ask"><b>Уточню</b>${d.question || 'Попробуйте назвать привычку и самочувствие: «пил кофе, спал пять часов».'}</div>`;
+    return;
+  }
   const known = d.known.length
     ? d.known.map(k => `<div>${k.text}<span class="note ${k.warn ? 'warn' : ''}">${k.cause}</span></div>`).join('')
     : '<div class="none">Про эти привычки в дневнике пока нечего сказать: нужно минимум семь дней с ними и семь без.</div>';
@@ -200,8 +217,11 @@ async function parse(){
   out.innerHTML = '<h2 style="margin-top:0">Что получилось за день</h2>' + d.facts.map(f =>
     `<div class="fact"><span class="src">${f.source}</span><span class="tag">${f.kind === 'factor' ? 'привычка' : 'состояние'}</span>
      <b>${f.name}</b><span>${f.kind === 'factor' ? (f.value ? 'было' : 'не было') : f.value + ' из 10'}</span></div>`).join('') +
+    (d.question ? `<div class="ask"><b>Уточню</b>${d.question}
+       <input id="answer" placeholder="ответьте парой слов" onkeydown="if(event.key==='Enter')sendAnswer()">
+       <button onclick="sendAnswer()">Ответить</button></div>` : '') +
     `<div class="known"><b>Что об этом уже известно из вашего дневника</b>${known}</div>` +
-    '<p class="hint" style="margin-top:14px">Одна запись ничего не доказывает. Выводы появляются, когда таких дней набирается много — нажмите «Показать выводы за 120 дней».</p>';
+    '<p class="hint" style="margin-top:14px">Одна запись ничего не доказывает. Выводы появляются, когда таких дней набирается много.</p>';
 }
 async function demo(){
   const out = document.getElementById('out');
@@ -269,7 +289,9 @@ class Handler(BaseHTTPRequestHandler):
             "cause": basis(l),
             "warn": bool(l.confounder),
         } for l in _known_links() if l.factor in mentioned and l.strength != "наблюдение"]
-        self._send(json.dumps({"facts": facts, "known": known}, ensure_ascii=False).encode("utf-8"),
+        question = next_question(timeline.days[0], _known_links())
+        self._send(json.dumps({"facts": facts, "known": known, "question": question},
+                              ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
     def log_message(self, *args):
@@ -343,7 +365,8 @@ def _demo(days: int = DEFAULT_DAYS) -> dict:
 
 
 def main() -> None:
-    server = HTTPServer((HOST, PORT), Handler)
+    threading.Thread(target=_known_links, daemon=True).start()  # прогрев, чтобы первый разбор не ждал
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Откройте http://{HOST}:{PORT} — остановить: Ctrl+C")
     try:
         server.serve_forever()

@@ -26,6 +26,7 @@ from wam.derive import DEVICE_SOURCES, derive_factors
 from wam.extract import RuleExtractor
 from wam.insights import find_links
 from wam.phrases import full, say
+from wam.questions import next_question
 from wam.schema import Timeline
 from wam.voice import SaluteSpeech, transcribe_voice
 
@@ -82,8 +83,7 @@ class TelegramBot:
 
         record = self.extractor.extract(text, date.today())
         if not record.facts:
-            return ("Не понял, что записать. Назовите привычку и самочувствие, "
-                    "например: «пил кофе, спал пять часов, тревожно».")
+            return next_question(record)
 
         self.storage.add(chat_id, record)
         return self._reply(chat_id, record)
@@ -111,6 +111,10 @@ class TelegramBot:
                 lines.append(f"  {fact.name}: {'было' if fact.value else 'не было'} {mark}".rstrip())
             else:
                 lines.append(f"  {fact.name}: {fact.value} из 10 {mark}".rstrip())
+
+        question = next_question(record, find_links(derive_factors(self.storage.timeline(chat_id))))
+        if question:
+            lines.append(f"\n{question}")
 
         known = self._known_for(chat_id, record)
         if known:
