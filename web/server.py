@@ -17,6 +17,7 @@ from wam.experiments import Experiment, evaluate
 from wam.derive import derive_factors
 from wam.extract import RuleExtractor
 from wam.insights import find_links
+from wam.phrases import say, basis, next_step
 from wam.schema import Timeline
 from wam.wearables import SberRingSource, merge_into
 from wam.derive import DEVICE_SOURCES
@@ -264,9 +265,8 @@ class Handler(BaseHTTPRequestHandler):
         mentioned = {f.name for f in timeline.days[0].facts
                      if f.kind == "factor" and f.value > 0}
         known = [{
-            "text": f"«{l.factor}» → «{l.metric}»: {l.direction} на {abs(l.effect):.1f} балла "
-                    f"({'на следующий день' if l.lag_days else 'в тот же день'}, {l.strength})",
-            "cause": l.causal_note,
+            "text": say(l),
+            "cause": basis(l),
             "warn": bool(l.confounder),
         } for l in _known_links() if l.factor in mentioned and l.strength != "наблюдение"]
         self._send(json.dumps({"facts": facts, "known": known}, ensure_ascii=False).encode("utf-8"),
@@ -332,11 +332,9 @@ def _demo(days: int = DEFAULT_DAYS) -> dict:
                    f"Проверено {len(_known_links(days))} пар привычка-состояние, "
                    f"осталось {len(links)}.",
         "links": [{
-            "text": f"«{l.factor}» → «{l.metric}»: {l.direction} на {abs(l.effect):.1f} балла",
-            "detail": f"{'в тот же день' if l.lag_days == 0 else 'на следующий день'} · "
-                      f"{l.days_with} дней с фактором против {l.days_without} без · "
-                      f"{l.strength} · источник: {l.source}",
-            "cause": l.causal_note,
+            "text": say(l),
+            "detail": basis(l),
+            "cause": next_step(l),
             "warn": bool(l.confounder),
         } for l in links],
         "experiment": {"hypothesis": experiment.hypothesis, "plan": experiment.plan},
