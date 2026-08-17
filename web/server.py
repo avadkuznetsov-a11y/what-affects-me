@@ -51,7 +51,7 @@ def parse_day(text: str, day):
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Что на меня влияет - прототип</title>
+<title>Мира - дневник, который ищет причины</title>
 <style>
  :root{--ink:#1A1A1A;--text:#4B4F52;--soft:#8A8F93;--line:#E6E8E9;--green:#1F8A5B;--bg:#fff}
  *{box-sizing:border-box}
@@ -100,7 +100,8 @@ PAGE = """<!doctype html>
 
 <div class="wrap">
   <p class="eyebrow"><i></i>Прототип · разбор речи: __ENGINE__</p>
-  <h1>Что на меня влияет</h1>
+  <h1>Мира</h1>
+  <p style="font-size:18px;margin-top:-4px">Дневник, который ищет причины.</p>
   <p>Расскажите про свой день обычными словами - так же, как написали бы в мессенджере.
      Программа спросит, если чего-то не хватает, и скажет, что уже знает про ваши привычки.</p>
 
@@ -204,7 +205,7 @@ async function reset(){
 }
 
 function hello(){
-  add('bot', 'Расскажите, как прошёл день. Например: «пил кофе часов в пять, спал часов пять, с утра тревожно».');
+  add('bot', 'Привет, я Мира. Расскажите, как прошёл день - обычными словами. Например: «пил кофе часов в пять, спал часов пять, с утра тревожно».');
 }
 
 let rec = null, listening = false;
@@ -324,8 +325,9 @@ def _handle(text: str, ring: dict | None, days: int) -> list[dict]:
         SESSION.pending = next_question(SESSION.record)
         return [{"kind": "ask", "text": SESSION.pending}]
 
-    messages.append({"kind": "bot", "text": f"Записал, разобрал {engine}:",
-                     "note": _facts_note(SESSION.record)})
+    # Чем разобрана фраза - техническая деталь, человеку она не нужна:
+    # это видно в шапке страницы.
+    messages.append({"kind": "bot", "text": "Записал:", "note": _facts_note(SESSION.record)})
 
     question = next_question(SESSION.record, links)
     if question:
