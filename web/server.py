@@ -14,8 +14,12 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from demo.generate import build
 from wam.experiments import Experiment, evaluate
+from wam.derive import derive_factors
 from wam.extract import RuleExtractor
 from wam.insights import find_links
+from wam.schema import Timeline
+from wam.wearables import SberRingSource, merge_into
+from wam.derive import DEVICE_SOURCES
 
 HOST, PORT = "127.0.0.1", 8765
 
@@ -49,6 +53,15 @@ PAGE = """<!doctype html>
  .ex{border:1px solid var(--line);border-radius:8px;padding:16px 18px;margin-top:12px}
  .ex li{color:var(--text);font-size:15px;margin-bottom:6px}
  .verdict{font-weight:700;color:var(--green);margin-top:10px}
+ .ring{margin-top:22px;padding:16px 18px;border:1px solid var(--line);border-radius:8px}
+ .ring b{font-size:15px}
+ .ringrow{display:flex;gap:22px;flex-wrap:wrap;margin-top:10px}
+ .ringrow label{font-size:14px;color:var(--text);display:flex;align-items:center;gap:8px}
+ .ringrow input{width:120px}
+ .ringrow span{font-weight:700;color:var(--ink);min-width:42px}
+ .src{font-size:12px;color:var(--soft);min-width:74px}
+ .note{font-size:13px;color:var(--soft);display:block;margin-top:4px}
+ .warn{color:#A5372F}
 </style></head><body>
 <div class="wrap">
   <p class="eyebrow"><i></i>Прототип</p>
@@ -59,31 +72,67 @@ PAGE = """<!doctype html>
   <textarea id="text">Опять пил кофе часов в пять вечера, потом до ночи листал ленту. Спал часов пять, с утра тревога какая-то.</textarea>
   <div class="row">
     <button onclick="parse()">Разобрать запись</button>
-    <button class="ghost" onclick="demo()">Показать выводы за 90 дней</button>
+    <button class="ghost" id="mic" onclick="listen()">🎤 Наговорить</button>
+    <button class="ghost" onclick="demo()">Показать выводы за 120 дней</button>
   </div>
-  <p class="hint" style="margin-top:10px">Попробуйте свои фразы: «сходил в зал, вечером бодрый»,
+  <p class="hint" style="margin-top:10px">В продукте это голосовое в мессенджере. Здесь речь
+     распознаёт браузер — работает в Chrome. Попробуйте: «сходил в зал, вечером бодрый»,
      «перелёт, спал четыре часа», «не пил кофе, выспался отлично».</p>
+
+  <div class="ring">
+    <b>Кольцо за этот день</b>
+    <div class="ringrow">
+      <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="ringLabel()"><span id="sleepv">41</span></label>
+      <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="ringLabel()"><span id="stressv">72</span></label>
+      <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="ringLabel()"><span id="stepsv">3000</span></label>
+    </div>
+    <p class="hint" style="margin:8px 0 0">Эти цифры человек не вводит — они приходят с прибора
+       и участвуют в разборе наравне со словами.</p>
+  </div>
 
   <div class="out" id="out"><p class="hint">Здесь появится результат.</p></div>
 </div>
 <script>
+function ringLabel(){
+  for(const id of ['sleep','stress','steps']) document.getElementById(id+'v').textContent = document.getElementById(id).value;
+}
+function listen(){
+  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
+  const mic = document.getElementById('mic');
+  if(!Rec){ mic.textContent = 'браузер не умеет — откройте в Chrome'; return; }
+  const rec = new Rec();
+  rec.lang = 'ru-RU'; rec.interimResults = true;
+  mic.textContent = '🔴 говорите…';
+  rec.onresult = e => {
+    document.getElementById('text').value = Array.from(e.results).map(r => r[0].transcript).join(' ');
+  };
+  rec.onend = () => { mic.textContent = '🎤 Наговорить'; parse(); };
+  rec.onerror = () => { mic.textContent = '🎤 Наговорить'; };
+  rec.start();
+}
 async function parse(){
   const text = document.getElementById('text').value;
-  const r = await fetch('/parse', {method:'POST', body: JSON.stringify({text})});
+  const ring = {
+    sleep_score: +document.getElementById('sleep').value,
+    stress_level: +document.getElementById('stress').value,
+    steps: +document.getElementById('steps').value
+  };
+  const r = await fetch('/parse', {method:'POST', body: JSON.stringify({text, ring})});
   const d = await r.json();
   const out = document.getElementById('out');
   if(!d.facts.length){ out.innerHTML = '<p class=hint>Ничего не распознал. Попробуйте назвать привычку и самочувствие: «пил кофе, спал пять часов».</p>'; return; }
-  out.innerHTML = '<h2 style="margin-top:0">Что понял из фразы</h2>' + d.facts.map(f =>
-    `<div class="fact"><span class="tag">${f.kind === 'factor' ? 'привычка' : 'состояние'}</span>
-     <b>${f.name}</b><span>${f.kind === 'factor' ? (f.value ? 'было' : 'не было') : f.value + ' из 10'}</span></div>`).join('');
+  out.innerHTML = '<h2 style="margin-top:0">Что получилось за день</h2>' + d.facts.map(f =>
+    `<div class="fact"><span class="src">${f.source}</span><span class="tag">${f.kind === 'factor' ? 'привычка' : 'состояние'}</span>
+     <b>${f.name}</b><span>${f.kind === 'factor' ? (f.value ? 'было' : 'не было') : f.value + ' из 10'}</span></div>`).join('') +
+    '<p class="hint" style="margin-top:14px">Слова и показания прибора попали в один день. Дальше связи ищутся между всеми фактами сразу, независимо от источника.</p>';
 }
 async function demo(){
   const out = document.getElementById('out');
   out.innerHTML = '<p class=hint>Считаю…</p>';
   const r = await fetch('/demo');
   const d = await r.json();
-  out.innerHTML = '<h2 style="margin-top:0">Что нашлось за 90 дней</h2>' +
-    d.links.map(l => `<div class="link">${l.text}<em>${l.detail}</em></div>`).join('') +
+  out.innerHTML = '<h2 style="margin-top:0">Что нашлось за 120 дней</h2>' +
+    d.links.map(l => `<div class="link">${l.text}<em>${l.detail}</em><span class="note ${l.warn ? 'warn' : ''}">${l.cause}</span></div>`).join('') +
     `<h2>Проверка самой сильной связи</h2><div class="ex"><b>${d.experiment.hypothesis}</b><ul>` +
     d.experiment.plan.map(s => `<li>${s}</li>`).join('') +
     `</ul><div class="verdict">${d.verdict.status}</div><p style="margin:6px 0 0">${d.verdict.text}</p></div>` +
@@ -108,8 +157,20 @@ class Handler(BaseHTTPRequestHandler):
             return
         length = int(self.headers.get("Content-Length", 0))
         payload = json.loads(self.rfile.read(length) or b"{}")
-        record = RuleExtractor().extract(payload.get("text", ""), date.today())
-        facts = [{"kind": f.kind, "name": f.name, "value": f.value} for f in record.facts]
+        today = date.today()
+
+        timeline = Timeline()
+        timeline.add(RuleExtractor().extract(payload.get("text", ""), today))
+
+        ring = payload.get("ring") or {}
+        if ring:
+            ring["date"] = today.isoformat()
+            merge_into(timeline, SberRingSource().read([ring]))
+            derive_factors(timeline)
+
+        facts = [{"kind": f.kind, "name": f.name, "value": f.value,
+                  "source": "с кольца" if f.source in DEVICE_SOURCES else "из рассказа"}
+                 for f in timeline.days[0].facts]
         self._send(json.dumps({"facts": facts}, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
@@ -125,15 +186,18 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _demo() -> dict:
-    timeline = build(days=90)
-    links = find_links(timeline)
+    timeline = derive_factors(build(days=120))
+    links = [l for l in find_links(timeline) if l.strength != "наблюдение"]
     experiment = Experiment.from_link(links[0], start=timeline.days[-40].day, days=40)
     verdict = evaluate(experiment, timeline)
     return {
         "links": [{
             "text": f"«{l.factor}» → «{l.metric}»: {l.direction} на {abs(l.effect):.1f} балла",
             "detail": f"{'в тот же день' if l.lag_days == 0 else 'на следующий день'} · "
-                      f"{l.days_with} дней с привычкой против {l.days_without} без · {l.strength}",
+                      f"{l.days_with} дней с фактором против {l.days_without} без · "
+                      f"{l.strength} · источник: {l.source}",
+            "cause": l.causal_note,
+            "warn": bool(l.confounder),
         } for l in links],
         "experiment": {"hypothesis": experiment.hypothesis, "plan": experiment.plan},
         "verdict": {"status": verdict.status.capitalize(), "text": verdict.text},
