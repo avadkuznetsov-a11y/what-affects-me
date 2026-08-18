@@ -65,16 +65,23 @@ def next_question(record: DayRecord, links: list[Link] | None = None,
     # чего не хватает для её проверки. Но только один раз за разговор: человек
     # рассказал про весёлое утро, а мы третий раз про тревогу - так и бросают.
     for link in links or []:
-        if link.factor in factors and link.metric not in metrics:
-            question = _ASK_METRIC.get(link.metric)
-            if not question or question in asked:
-                continue
-            if metrics:
-                # Про самочувствие человек уже сказал, это уточнение сверх того
-                short = _EXTRA_ASK.get(link.metric, f"«{link.metric}» сегодня как?")
-                return (f"Кстати, {short} Оцените от 0 до 10 - "
+        if link.factor not in factors or link.metric in metrics:
+            continue
+        question = _ASK_METRIC.get(link.metric)
+        if not question:
+            continue
+        if metrics:
+            # Про самочувствие человек уже сказал, это уточнение сверх того
+            short = _EXTRA_ASK.get(link.metric, f"«{link.metric}» сегодня как?")
+            question = (f"Кстати, {short} Оцените от 0 до 10 - "
                         f"проверяю, влияет ли на это «{link.factor}».")
-            return question + f" Проверяем, как на это влияет «{link.factor}»."
+        else:
+            question = question + f" Проверяем, как на это влияет «{link.factor}»."
+        # Сравниваем именно ту фразу, которую отдадим: раньше проверялась
+        # заготовка, а запоминалась собранная строка, и защита не работала
+        if question in asked:
+            continue
+        return question
 
     # Состояние названо словом, но без силы: «тревога какая-то» - это оценка
     # по умолчанию, лучше уточнить у человека
