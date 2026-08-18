@@ -39,11 +39,12 @@ _FACTOR_PATTERNS: list[tuple[str, str]] = [
 ]
 
 _METRIC_PATTERNS: list[tuple[str, str]] = [
-    (r"тревог|беспоко|на нервах|паник|нервнича",     "тревога"),
-    (r"голов[ан].*болит|мигрен|болит голова",        "головная боль"),
-    (r"выспал|сон|спал|засып|уснут|уснул|бессонн",   "качество сна"),
-    (r"энерг|сил[ыа]|бодр|устал|разбит",             "энергия"),
-    (r"настроен|раздраж|злюсь|радост",               "настроение"),
+    (r"тревог|беспоко|на нервах|паник|нервнича|переживал",           "тревога"),
+    (r"голов[ан].*болит|мигрен|болит голова",                        "головная боль"),
+    (r"выспал|сон|спал|засып|уснут|уснул|бессонн",                   "качество сна"),
+    (r"энерг|сил[ыа]|бодр|устал|разбит|вымотан|выжат|вял",           "энергия"),
+    (r"настроен|раздраж|злюсь|радост|весел|груст|уныл|спокойн|"
+     r"хорош|плох|отличн|ужасн|норм",                                "настроение"),
 ]
 
 # Оценки состояния, если человек называет их словами, а не цифрой
@@ -141,15 +142,25 @@ class LLMExtractor:
         raw = self._complete(self.PROMPT + text)
         data = _parse_json(raw)
         for item in data.get("factors", []):
-            record.add(Fact("factor", str(item.get("name", "")).strip().lower(),
-                            float(item.get("value", 1)), "diary"))
+            name = str(item.get("name", "")).strip().lower()
+            # «сон» - это то, что измеряют, а не то, что делают. Модель иногда
+            # кладёт показатель в привычки; такие записи только мусорят список.
+            if not name or _canonical_metric(name):
+                continue
+            record.add(Fact("factor", name, float(item.get("value", 1)), "diary"))
         lowered = text.lower()
         for item in data.get("metrics", []):
             name = _canonical_metric(str(item.get("name", "")).strip().lower())
-            # Модель любит дописать нули по всем показателям сразу. Берём только
-            # то, о чём человек правда сказал.
-            if name and _mentioned(name, lowered):
-                record.add(Fact("metric", name, float(item.get("value", 0)), "diary"))
+            if not name:
+                continue        # показатель не из нашего списка - в статистику не годится
+            value = float(item.get("value", 0))
+            # Модель любит дописать нули по всем показателям сразу. Ноль без
+            # единого слова об этом в тексте - выдумка, а не наблюдение.
+            # А вот ненулевую оценку принимаем: модель прочитала фразу целиком
+            # и понимает «весело» или «выжат» лучше любого словаря.
+            if value == 0 and not _mentioned(name, lowered):
+                continue
+            record.add(Fact("metric", name, value, "diary"))
         for name in data.get("events", []):
             record.add(Fact("event", str(name).strip().lower(), 1.0, "diary"))
         return record

@@ -23,8 +23,16 @@ def test_asks_about_metric_under_test():
     links = find_links(derive_factors(build(days=120)))
     record = RuleExtractor().extract("Пил кофе, весь день бодрый", date(2026, 8, 1))
     question = next_question(record, links)
-    assert "поспать" in question
+    assert "спалось" in question or "поспать" in question
     assert "кофе" in question
+
+
+def test_does_not_repeat_the_same_question():
+    """Один и тот же вопрос дважды - верный способ, чтобы человек бросил дневник."""
+    links = find_links(derive_factors(build(days=120)))
+    record = RuleExtractor().extract("Пил кофе, весь день бодрый", date(2026, 8, 1))
+    first = next_question(record, links)
+    assert next_question(record, links, asked={first}) != first
 
 
 def test_silent_when_everything_is_clear():

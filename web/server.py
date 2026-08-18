@@ -131,13 +131,10 @@ PAGE = """<!doctype html>
       <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
     </div>
     <b style="display:block;margin-top:20px">Чем разбирается речь</b>
-    <p class="hint" style="margin-top:8px">Сейчас: <b id="engine">__ENGINE__</b>.
-      Разбор по правилам работает всегда и без интернета, но понимает только знакомые слова.
-      Чтобы разбирала модель, запустите с собственным ключом - он читается из окружения
-      и никуда не сохраняется:</p>
-    <pre class="keys">GIGACHAT_TOKEN=... python3 -m web.server
-YANDEX_API_KEY=... YANDEX_FOLDER_ID=... python3 -m web.server
-ANTHROPIC_API_KEY=... python3 -m web.server</pre>
+    <p class="hint" style="margin-top:8px">Сейчас работает <b>__ENGINE__</b>. Модель понимает живую
+      речь целиком, разбор по правилам знает только частые слова, но работает без интернета
+      и подстраховывает, когда сервис недоступен. Свою модель можно подключить своим ключом -
+      GigaChat, YandexGPT или Claude, как это сделать написано в README.</p>
 
     <div class="tools">
       <select id="days">
@@ -252,10 +249,12 @@ class Session:
     def __init__(self) -> None:
         self.record = DayRecord(day=date.today())
         self.pending: str | None = None
+        self.asked: set[str] = set()      # чтобы не спрашивать одно и то же дважды
 
     def reset(self) -> None:
         self.record = DayRecord(day=date.today())
         self.pending = None
+        self.asked = set()
 
 
 SESSION = Session()
@@ -277,6 +276,8 @@ def _facts_note(record: DayRecord) -> str:
     """
     habits, metrics = [], []
     for fact in record.facts:
+        if fact.kind == "event":
+            continue        # события в поиске связей не участвуют, показывать их незачем
         mark = " (с кольца)" if fact.source in DEVICE_SOURCES else ""
         if fact.kind == "factor":
             if fact.value > 0:
@@ -322,16 +323,20 @@ def _handle(text: str, ring: dict | None, days: int) -> list[dict]:
         derive_factors(day_timeline)
 
     if not SESSION.record.facts:
-        SESSION.pending = next_question(SESSION.record)
+        SESSION.pending = next_question(SESSION.record, links, SESSION.asked)
         return [{"kind": "ask", "text": SESSION.pending}]
 
     # Чем разобрана фраза - техническая деталь, человеку она не нужна:
     # это видно в шапке страницы.
     messages.append({"kind": "bot", "text": "Записал:", "note": _facts_note(SESSION.record)})
 
-    question = next_question(SESSION.record, links)
+    # Больше двух уточнений за разговор - это уже анкета, из-за которых дневники
+    # и бросают. Дальше работаем с тем, что рассказали.
+    links_for_question = links if len(SESSION.asked) < 2 else []
+    question = next_question(SESSION.record, links_for_question, SESSION.asked)
     if question:
         SESSION.pending = question
+        SESSION.asked.add(question)
         messages.append({"kind": "ask", "text": question})
         return messages
 
@@ -351,7 +356,11 @@ def _conclusions(record: DayRecord, links) -> list[dict]:
     if not found:
         return [{"kind": "bot", "text": "Про эти привычки выводов пока нет: нужно хотя бы семь "
                                         "дней с ними и семь без. Продолжайте записывать."}]
-    return [{"kind": "result", "text": say(l), "note": f"{basis(l)} {next_step(l)}"} for l in found]
+    head = {"kind": "bot", "text": "Вот что про эти привычки говорит придуманный дневник "
+                                   "за несколько месяцев - на ваших записях выводы появятся "
+                                   "так же, недели через три."}
+    return [head] + [{"kind": "result", "text": say(l), "note": f"{basis(l)} {next_step(l)}"}
+                     for l in found]
 
 
 def _summary(days: int) -> list[dict]:
@@ -365,9 +374,11 @@ def _summary(days: int) -> list[dict]:
 
     messages = [{
         "kind": "bot",
-        "text": f"За {period} проверено {len(links)} пар «привычка - состояние». "
-                f"Осталось {len(strong)}, из них {sum(1 for l in strong if l.confounder)} "
-                f"объясняются другим фактором.",
+        "text": f"Показываю придуманный дневник за {period} - он нужен, чтобы было видно, "
+                f"как работают выводы. Ваши сегодняшние записи в него не входят: за один день "
+                f"выводов не бывает.\n\n"
+                f"Проверено {len(links)} пар «привычка - состояние», осталось {len(strong)}, "
+                f"из них {sum(1 for l in strong if l.confounder)} объясняются другим фактором.",
     }]
     messages += [{"kind": "result", "text": say(l), "note": f"{basis(l)} {next_step(l)}"}
                  for l in strong]

@@ -27,6 +27,16 @@ _ASK_METRIC = {
     "головная боль": "Насколько сильно болела голова, от 0 до 10?",
 }
 
+# Как спросить про показатель, когда человек уже рассказал про самочувствие.
+# Целыми фразами: «энергия сегодня была?» по-русски не говорят.
+_EXTRA_ASK = {
+    "тревога":       "тревога сегодня была?",
+    "энергия":       "сил сегодня хватало?",
+    "настроение":    "как настроение?",
+    "головная боль": "голова болела?",
+    "качество сна":  "как спалось?",
+}
+
 NOTHING_UNDERSTOOD = (
     "Не понял, что записать. Скажите, что делали и как себя чувствовали, "
     "например: «пил кофе, спал часов пять, с утра тревожно»."
@@ -38,8 +48,10 @@ NO_STATE = (
 )
 
 
-def next_question(record: DayRecord, links: list[Link] | None = None) -> str | None:
+def next_question(record: DayRecord, links: list[Link] | None = None,
+                  asked: set[str] | None = None) -> str | None:
     """Один вопрос, который стоит задать после этой записи. None - вопросов нет."""
+    asked = asked or set()
     if not record.facts:
         return NOTHING_UNDERSTOOD
 
@@ -50,13 +62,19 @@ def next_question(record: DayRecord, links: list[Link] | None = None) -> str | N
         return NO_STATE
 
     # Если по названной привычке уже проверяется гипотеза, спрашиваем ровно то,
-    # чего не хватает для её проверки
+    # чего не хватает для её проверки. Но только один раз за разговор: человек
+    # рассказал про весёлое утро, а мы третий раз про тревогу - так и бросают.
     for link in links or []:
         if link.factor in factors and link.metric not in metrics:
             question = _ASK_METRIC.get(link.metric)
-            if question:
-                reason = f" Проверяем, как на это влияет «{link.factor}»."
-                return question + reason
+            if not question or question in asked:
+                continue
+            if metrics:
+                # Про самочувствие человек уже сказал, это уточнение сверх того
+                short = _EXTRA_ASK.get(link.metric, f"«{link.metric}» сегодня как?")
+                return (f"Кстати, {short} Оцените от 0 до 10 - "
+                        f"проверяю, влияет ли на это «{link.factor}».")
+            return question + f" Проверяем, как на это влияет «{link.factor}»."
 
     # Состояние названо словом, но без силы: «тревога какая-то» - это оценка
     # по умолчанию, лучше уточнить у человека
@@ -79,7 +97,8 @@ def apply_answer(record: DayRecord, question: str, answer: str) -> DayRecord:
 
     from .extract import RuleExtractor, Fact, _word_score
 
-    metric = next((name for name, text in _ASK_METRIC.items() if text in question), "")
+    metric = next((name for name, text in _ASK_METRIC.items()
+                   if text.lower() in question.lower()), "")
     if not metric:
         return record
 
