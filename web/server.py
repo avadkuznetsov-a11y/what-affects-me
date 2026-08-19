@@ -17,41 +17,30 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from demo.generate import build
-from wam.derive import DEVICE_SOURCES, derive_factors
+from wam import dialog
+from wam.derive import derive_factors
+from wam.diary import DiaryStore
 from wam.experiments import Experiment, evaluate
-from wam.extract import LLMExtractor, RuleExtractor
-from wam.llm import available_engine
 from wam.insights import find_links
+from wam.llm import available_engine
 from wam.phrases import basis, next_step, say
-from wam.questions import apply_answer, next_question
-from wam.schema import DayRecord, Timeline
-from wam.wearables import SberRingSource, merge_into
 
 HOST, PORT = "127.0.0.1", 8765
 DEFAULT_DAYS = 120
+WEB_KEY = "web"          # ключ дневника, который видит страница
 
 # Речь разбирает модель, если для неё есть ключ в окружении. Ключей в
 # репозитории нет: у того, кто скачает код, будет работать разбор по правилам,
 # пока он не подставит свой ключ.
 ENGINE_NAME, _COMPLETE = available_engine()
-_RULES = RuleExtractor()
-_MODEL = LLMExtractor(_COMPLETE) if ENGINE_NAME != "правила" else None
+PARSER = dialog.Parser(ENGINE_NAME, _COMPLETE)
 
+# Дневник один на процесс: то, что человек написал боту в Telegram, видно на
+# странице, и наоборот.
+STORE = DiaryStore()
 
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
 MAX_BODY = 64 * 1024
-
-
-def parse_day(text: str, day):
-    """Разбор фразы: сначала модель, при сбое или пустом ответе - правила."""
-    if _MODEL is not None:
-        try:
-            record = _MODEL.extract(text, day)
-            if record.facts:
-                return record
-        except Exception:
-            pass
-    return _RULES.extract(text, day)
 
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
@@ -172,7 +161,6 @@ async function send(){
   const field = document.getElementById('text');
   const text = field.value.trim();
   if(!text) return;
-  add('me', text);
   field.value = '';
   document.getElementById('send').disabled = true;
 
@@ -194,7 +182,6 @@ async function send(){
 }
 
 async function summary(){
-  add('me', 'Что уже известно?');
   const r = await fetch('/summary?days=' + document.getElementById('days').value);
   const d = await r.json();
   for(const m of d.messages) add(m.kind, m.text, m.note);
@@ -248,22 +235,6 @@ hello();
 
 # ── состояние разговора ───────────────────────────────────────────────────
 
-class Session:
-    """Один разговор: сегодняшняя запись и вопрос, на который ждём ответ."""
-
-    def __init__(self) -> None:
-        self.record = DayRecord(day=date.today())
-        self.pending: str | None = None
-        self.asked: set[str] = set()      # чтобы не спрашивать одно и то же дважды
-
-    def reset(self) -> None:
-        self.record = DayRecord(day=date.today())
-        self.pending = None
-        self.asked = set()
-
-
-SESSION = Session()
-_SESSION_LOCK = threading.Lock()      # сервер многопоточный, разговор один
 _CACHE: dict[int, tuple] = {}
 _CACHE_LOCK = threading.Lock()
 
@@ -281,97 +252,29 @@ def _diary(days: int = DEFAULT_DAYS):
         return _CACHE[days]
 
 
-def _facts_note(record: DayRecord) -> str:
+def _say(text: str, ring: dict | None, days: int) -> dict:
     """
-    Показываем только то, что было, и сами показатели. Строки вида
-    «много двигался: не было» человеку не нужны - это шум.
+    Один шаг разговора на странице. Вопросы и выводы берём по придуманному
+    дневнику: на записях за один день выводов не бывает, а показать, как они
+    выглядят, надо сразу.
     """
-    habits, metrics = [], []
-    for fact in record.facts:
-        if fact.kind == "event":
-            continue        # события в поиске связей не участвуют, показывать их незачем
-        mark = " (с кольца)" if fact.source in DEVICE_SOURCES else ""
-        if fact.kind == "factor":
-            if fact.value > 0:
-                habits.append(f"{fact.name}{mark}")
-            elif fact.source not in DEVICE_SOURCES:
-                habits.append(f"{fact.name}: не было")
-        else:
-            metrics.append(f"{fact.name} {fact.value:g} из 10{mark}")
-
-    lines = []
-    if habits:
-        lines.append("Привычки: " + ", ".join(dict.fromkeys(habits)))
-    if metrics:
-        lines.append("Самочувствие: " + ", ".join(dict.fromkeys(metrics)))
-    return "\n".join(lines)
-
-
-def _handle(text: str, ring: dict | None, days: int) -> list[dict]:
-    """Один шаг разговора. Возвращает сообщения для ленты."""
     _, links = _diary(days)
-    messages: list[dict] = []
-
-    if SESSION.pending:
-        # Это ответ на заданный вопрос: он дополняет сегодняшнюю запись
-        before = _metrics_snapshot(SESSION.record)
-        apply_answer(SESSION.record, SESSION.pending, text)
-        if _metrics_snapshot(SESSION.record) == before:
-            # ответ не понят - разбираем его как обычную фразу
-            parsed = parse_day(text, SESSION.record.day)
-            for fact in parsed.facts:
-                SESSION.record.add(fact)
-        SESSION.pending = None
-    else:
-        parsed = parse_day(text, SESSION.record.day)
-        for fact in parsed.facts:
-            SESSION.record.add(fact)
-
-    if ring:
-        day_timeline = Timeline()
-        day_timeline.add(SESSION.record)
-        merge_into(day_timeline, SberRingSource().read([{**ring, "date": SESSION.record.day.isoformat()}]))
-        derive_factors(day_timeline)
-
-    if not SESSION.record.facts:
-        SESSION.pending = next_question(SESSION.record, links, SESSION.asked)
-        return [{"kind": "ask", "text": SESSION.pending}]
-
-    # Чем разобрана фраза - техническая деталь, человеку она не нужна:
-    # это видно в шапке страницы.
-    messages.append({"kind": "bot", "text": "Записал:", "note": _facts_note(SESSION.record)})
-
-    # Больше двух уточнений за разговор - это уже анкета, из-за которых дневники
-    # и бросают. Дальше работаем с тем, что рассказали.
-    links_for_question = links if len(SESSION.asked) < 2 else []
-    question = next_question(SESSION.record, links_for_question, SESSION.asked)
-    if question:
-        SESSION.pending = question
-        SESSION.asked.add(question)
-        messages.append({"kind": "ask", "text": question})
-        return messages
-
-    messages.append({"kind": "bot", "text": "Картина дня понятна. Смотрю, что об этом "
-                                            "говорит ваш дневник."})
-    messages.extend(_conclusions(SESSION.record, links))
-    return messages
+    diary = STORE.get(WEB_KEY)
+    messages = dialog.step(diary, text, ring=ring, links=links, parser=PARSER,
+                           origin="page", links_from_demo=True)
+    return {"messages": messages, "seq": diary.seq}
 
 
-def _metrics_snapshot(record: DayRecord) -> dict:
-    return {f.name: f.value for f in record.facts if f.kind == "metric"}
-
-
-def _conclusions(record: DayRecord, links) -> list[dict]:
-    mentioned = {f.name for f in record.facts if f.kind == "factor" and f.value > 0}
-    found = [l for l in links if l.factor in mentioned and l.strength != "наблюдение"]
-    if not found:
-        return [{"kind": "bot", "text": "Про эти привычки выводов пока нет: нужно хотя бы семь "
-                                        "дней с ними и семь без. Продолжайте записывать."}]
-    head = {"kind": "bot", "text": "Вот что про эти привычки говорит придуманный дневник "
-                                   "за несколько месяцев - на ваших записях выводы появятся "
-                                   "так же, недели через три."}
-    return [head] + [{"kind": "result", "text": say(l), "note": f"{basis(l)} {next_step(l)}"}
-                     for l in found]
+def _summary_step(days: int) -> dict:
+    """Все выводы разом. Идут в ту же ленту, что и разговор."""
+    ready = _summary(days)      # тяжёлую статистику считаем до замка дневника
+    diary = STORE.get(WEB_KEY)
+    with diary.lock:
+        before = diary.seq
+        diary.say("me", "Что уже известно?")
+        for message in ready:
+            diary.say(message["kind"], message["text"], message.get("note", ""))
+        return {"messages": diary.feed(before), "seq": diary.seq}
 
 
 def _summary(days: int) -> list[dict]:
@@ -410,15 +313,14 @@ def _summary(days: int) -> list[dict]:
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
-            with _SESSION_LOCK:
-                SESSION.reset()  # открыли страницу - разговор начинается с чистого листа
+            # Перезагрузка страницы разговор не сбрасывает: для этого есть
+            # кнопка «Начать заново».
             self._send(PAGE.replace("__ENGINE__", ENGINE_NAME).encode("utf-8"),
                        "text/html; charset=utf-8")
         elif self.path.startswith("/summary"):
-            self._json({"messages": _summary(_days_param(self.path))})
+            self._json(_summary_step(_days_param(self.path)))
         elif self.path == "/reset":
-            with _SESSION_LOCK:
-                SESSION.reset()
+            STORE.get(WEB_KEY).reset()
             self._json({"ok": True})
         else:
             self.send_error(404)
@@ -435,9 +337,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self.send_error(400, str(exc))
             return
-        with _SESSION_LOCK:
-            messages = _handle(text, ring, days)
-        self._json({"messages": messages})
+        self._json(_say(text, ring, days))
 
     def _payload(self) -> dict | None:
         """Тело запроса как словарь. При любой беде отвечает сама и отдаёт None."""
