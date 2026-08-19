@@ -4,7 +4,8 @@ import threading
 import time
 from datetime import date, timedelta
 
-from wam.diary import CODE_LIFETIME, Diary, DiaryStore, looks_like_code
+from wam.diary import (CODE_ALPHABET, CODE_LIFETIME, CODE_TRIES_PER_CHAT,
+                       CODE_TRIES_TOTAL, GUEST_DIARIES, Diary, DiaryStore, looks_like_code)
 from wam.schema import DayRecord, Fact
 
 
@@ -18,9 +19,23 @@ def test_one_key_gives_one_diary():
 
 def test_code_looks_like_promised():
     code = DiaryStore().new_code("web")
-    assert re.fullmatch(r"\d{4}-МИРА", code)
+    assert re.fullmatch(r"[2-9A-HJ-NP-Z]{4}-[2-9A-HJ-NP-Z]{4}", code)
+    assert not (set("O0I1L") & set(code))       # похожих знаков в коде нет
     assert looks_like_code(code) and looks_like_code(" " + code.lower() + " ")
     assert not looks_like_code("пил кофе часов в пять")
+
+
+def test_code_is_not_worth_guessing():
+    """Четыре цифры подбирались за вечер: теперь вариантов на сорок бит."""
+    codes = {DiaryStore().new_code("web") for _ in range(200)}
+    assert len(codes) == 200
+    assert len(CODE_ALPHABET) ** 8 > 10 ** 11
+
+
+def test_code_is_read_as_written_by_hand():
+    store = DiaryStore()
+    code = store.new_code("web")
+    assert store.bind(f" {code.replace('-', ' ').lower()} ", 555) == "web"
 
 
 def test_code_works_once():
@@ -41,7 +56,64 @@ def test_stale_code_is_refused():
 def test_someone_elses_code_is_refused():
     store = DiaryStore()
     store.new_code("web")
-    assert store.bind("1234-МИРА", 555) is None
+    assert store.bind("AAAA-BBBB", 555) is None
+
+
+def test_guessing_the_code_runs_into_a_pause():
+    """Подбор кода: с одного чата - пауза, со всех сразу - код гасим."""
+    store = DiaryStore()
+    code = store.new_code("web")
+
+    for _ in range(CODE_TRIES_PER_CHAT):
+        assert store.bind("AAAA-BBBB", 555) is None
+    assert store.code_paused(555)
+    assert store.bind(code, 555) is None        # в паузе не годится и верный код
+    assert not store.code_paused(777)           # соседний чат не наказан
+
+    # Пауза не вечная: время вышло - чат снова может привязаться
+    store._misses[555] = (CODE_TRIES_PER_CHAT, time.time() - 1)
+    assert not store.code_paused(555)
+    assert store.bind(code, 555) == "web"
+
+
+def test_many_chats_guessing_burn_the_code():
+    store = DiaryStore()
+    code = store.new_code("web")
+    for chat in range(CODE_TRIES_TOTAL):
+        store.bind("AAAA-BBBB", 1000 + chat)
+    assert store.bind(code, 42) is None         # прежний код погашен
+    assert store.bind(store.new_code("web"), 42) == "web"
+
+
+def test_binding_brings_over_what_was_written_in_the_chat():
+    """Человек писал боту до привязки - эти дни не должны пропасть."""
+    store = DiaryStore()
+    chat = store.diary_for_chat(555)
+    yesterday = DayRecord(day=date.today() - timedelta(days=1))
+    yesterday.add(Fact("factor", "кофе"))
+    chat.add(yesterday)
+    chat.today().add(Fact("metric", "тревога", 6.0))
+
+    store.bind(store.new_code("web"), 555)
+
+    page = store.get("web")
+    assert [d.day for d in page.timeline.days] == [yesterday.day, date.today()]
+    assert page.today().metric("тревога") == 6.0
+    assert store.diary_for_chat(555) is page
+
+
+def test_unbound_diaries_do_not_pile_up_forever():
+    store = DiaryStore()
+    for chat in range(GUEST_DIARIES + 10):
+        store.diary_for_chat(chat)
+    assert len(store._diaries) <= GUEST_DIARIES
+
+
+def test_disconnect_unlinks_the_chats():
+    store = DiaryStore()
+    store.bind(store.new_code("web"), 555)
+    assert store.unlink("web") == [555]
+    assert store.key_for_chat(555) == "tg:555"
 
 
 def test_unbound_chat_gets_its_own_diary():

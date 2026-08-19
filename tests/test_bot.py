@@ -3,7 +3,7 @@ import threading
 
 from bot.telegram import TelegramBot, TelegramError, token_is_shaped_right
 from wam import dialog
-from wam.diary import DiaryStore
+from wam.diary import CODE_TRIES_PER_CHAT, DiaryStore
 
 # Токен ненастоящий, но правильной формы: настоящих в репозитории быть не должно.
 FAKE_TOKEN = "1234567:" + "a" * 35
@@ -63,8 +63,17 @@ def test_code_binds_the_chat_and_next_phrase_goes_to_the_page_diary():
 
 def test_wrong_code_is_refused_politely():
     bot = _bot()
-    answer = bot.handle(_message("1234-МИРА")["message"])
+    answer = bot.handle(_message("AAAA-BBBB")["message"])
     assert "не подошёл" in answer
+
+
+def test_bot_goes_quiet_when_the_code_is_being_guessed():
+    """Ответ на каждый промах - подсказка подбирающему, что попытка засчитана."""
+    bot = _bot()
+    answers = [bot.handle(_message("AAAA-BBBB")["message"])
+               for _ in range(CODE_TRIES_PER_CHAT)]
+    assert answers[-1] == ""
+    assert bot.handle(_message("AAAA-BBBB")["message"]) == ""
 
 
 def test_update_without_chat_is_skipped():
