@@ -1,12 +1,13 @@
 """Выводы должны читаться как обычная речь, а не как отчёт статистика."""
 from demo.generate import build
 from wam.derive import derive_factors
+from conftest import FAST_PERMUTATIONS
 from wam.insights import find_links
 from wam.phrases import say, basis, next_step, _days, _score
 
 
 def _link(factor, metric):
-    links = find_links(derive_factors(build(days=120)))
+    links = find_links(derive_factors(build(days=120)), permutations=FAST_PERMUTATIONS)
     return next(l for l in links if l.factor == factor and l.metric == metric)
 
 
@@ -30,7 +31,7 @@ def test_false_link_names_the_real_reason():
 
 def test_no_technical_words_in_user_text():
     """Человеку не показываем ни лаги, ни уровни значимости."""
-    for link in find_links(derive_factors(build(days=120))):
+    for link in find_links(derive_factors(build(days=120)), permutations=FAST_PERMUTATIONS):
         text = say(link) + basis(link) + next_step(link)
         for word in ("лаг", "p-value", "фактор →", "метрика"):
             assert word not in text

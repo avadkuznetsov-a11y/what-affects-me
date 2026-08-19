@@ -86,8 +86,15 @@ class Link:
         )
 
 
-def find_links(timeline: Timeline, seed: int = 0) -> list[Link]:
-    """Все связи, прошедшие порог наблюдений, отсортированные по силе эффекта."""
+def find_links(timeline: Timeline, seed: int = 0,
+               permutations: int = PERMUTATIONS) -> list[Link]:
+    """
+    Все связи, прошедшие порог наблюдений, отсортированные по силе эффекта.
+
+    permutations - сколько раз перемешиваем дни. По умолчанию столько, сколько
+    нужно, чтобы p-значение было честным до тысячных. Меньше ставят только там,
+    где важна скорость, а не точность порогов: в тестах и в черновом прогоне.
+    """
     rng = random.Random(seed)
     links: list[Link] = []
 
@@ -103,7 +110,8 @@ def find_links(timeline: Timeline, seed: int = 0) -> list[Link]:
             for lag in range(MAX_LAG_DAYS + 1):
                 if same_thing and lag == 0:
                     continue
-                link = _test_pair(factor, factor_series, metric, metric_series, lag, rng)
+                link = _test_pair(factor, factor_series, metric, metric_series, lag, rng,
+                                  permutations)
                 if link is not None:
                     links.append(link)
 
@@ -187,7 +195,8 @@ def _source_of(timeline: Timeline, factor: str) -> str:
     return "рассказ"
 
 
-def _test_pair(factor, factor_series, metric, metric_series, lag, rng) -> Link | None:
+def _test_pair(factor, factor_series, metric, metric_series, lag, rng,
+               permutations: int = PERMUTATIONS) -> Link | None:
     with_factor: list[float] = []
     without_factor: list[float] = []
 
@@ -205,22 +214,23 @@ def _test_pair(factor, factor_series, metric, metric_series, lag, rng) -> Link |
     if abs(effect) < 0.3:      # разница меньше трети балла человеку не нужна
         return None
 
-    p_value = _permutation_p(with_factor, without_factor, effect, rng)
+    p_value = _permutation_p(with_factor, without_factor, effect, rng, permutations)
     return Link(factor, metric, lag, round(effect, 2),
                 len(with_factor), len(without_factor), round(p_value, 4))
 
 
-def _permutation_p(group_a: list[float], group_b: list[float], effect: float, rng) -> float:
+def _permutation_p(group_a: list[float], group_b: list[float], effect: float, rng,
+                   permutations: int = PERMUTATIONS) -> float:
     """Как часто случайное разделение тех же дней даёт не меньший разрыв."""
     pool = group_a + group_b
     size = len(group_a)
     observed = abs(effect)
     hits = 0
-    for _ in range(PERMUTATIONS):
+    for _ in range(permutations):
         rng.shuffle(pool)
         if abs(mean(pool[:size]) - mean(pool[size:])) >= observed:
             hits += 1
-    return hits / PERMUTATIONS
+    return hits / permutations
 
 
 def summarise(timeline: Timeline) -> dict:

@@ -1,11 +1,12 @@
 """Причины, а не совпадения: датчики как факторы, третий фактор, направление во времени."""
 from demo.generate import build
 from wam.derive import derive_factors, DERIVED_FROM
+from conftest import FAST_PERMUTATIONS
 from wam.insights import find_links
 
 
 def _links():
-    return find_links(derive_factors(build(days=120)))
+    return find_links(derive_factors(build(days=120)), permutations=FAST_PERMUTATIONS)
 
 
 def test_device_readings_become_factors():
