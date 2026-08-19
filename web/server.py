@@ -14,6 +14,7 @@ import json
 import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from bot.telegram import TelegramBot, token_is_shaped_right
@@ -43,195 +44,14 @@ STORE = DiaryStore()
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
 MAX_BODY = 64 * 1024
 
-PAGE = """<!doctype html>
-<html lang="ru"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Мира - дневник, который ищет причины</title>
-<style>
- :root{--ink:#1A1A1A;--text:#4B4F52;--soft:#8A8F93;--line:#E6E8E9;--green:#1F8A5B;--bg:#fff}
- *{box-sizing:border-box}
- body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
- .banner{background:#FBF6E7;border-bottom:1px solid #EFE3BE;color:#6B5A22;font-size:14px;padding:11px 24px;text-align:center}
- .wrap{max-width:760px;margin:0 auto;padding:40px 24px 60px}
- .eyebrow{display:flex;align-items:center;gap:9px;font-size:12.5px;font-weight:700;letter-spacing:.13em;
-  text-transform:uppercase;color:var(--green);margin:0 0 16px}
- .eyebrow i{width:7px;height:7px;border-radius:50%;background:var(--green)}
- h1{font-size:34px;line-height:1.1;letter-spacing:-.02em;font-weight:800;margin:0 0 12px}
- p{color:var(--text);margin:0 0 14px}
- .hint{font-size:14px;color:var(--soft)}
 
- .chat{border:1px solid var(--line);border-radius:12px;margin-top:22px;overflow:hidden}
- .feed{padding:18px;display:flex;flex-direction:column;gap:12px;max-height:58vh;overflow-y:auto}
- .msg{max-width:88%;padding:11px 14px;border-radius:14px;font-size:15px;line-height:1.45;white-space:pre-line}
- .msg.me{align-self:flex-end;background:var(--green);color:#fff}
- .msg.bot{background:#F4F6F7}
- .msg.ask{background:#FBF6E7;border-left:3px solid #D9B84C}
- .msg.result{background:#F1F8F4;border-left:3px solid var(--green)}
- .msg small{display:block;margin-top:6px;color:var(--soft);font-size:13px}
- .msg.me small{color:rgba(255,255,255,.75)}
- .bar{display:flex;gap:10px;padding:14px 18px;border-top:1px solid var(--line);background:#FAFBFB}
- .bar input{flex:1;padding:12px 14px;font:inherit;border:1px solid var(--line);border-radius:10px}
- button{font:inherit;font-weight:600;background:var(--green);color:#fff;border:0;border-radius:10px;padding:12px 20px;cursor:pointer}
- button.ghost{background:#fff;color:var(--green);border:1px solid var(--green)}
- button:disabled{opacity:.5;cursor:default}
-
- .side{margin-top:26px;padding:18px;border:1px solid var(--line);border-radius:12px}
- .side b{font-size:15px}
- .sources{display:flex;flex-direction:column;gap:7px;margin:12px 0 18px}
- .sources label{display:flex;align-items:baseline;gap:9px;font-size:14px;color:var(--soft)}
- .sources label.on{color:var(--ink)}
- .sources em{font-style:normal;font-size:13px;color:var(--soft)}
- .ringrow{display:flex;gap:20px;flex-wrap:wrap}
- .ringrow label{font-size:14px;color:var(--text);display:flex;align-items:center;gap:8px}
- .ringrow input{width:110px}
- .ringrow span{font-weight:700;min-width:44px}
- .tools{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;align-items:center}
- select{font:inherit;padding:11px 12px;border:1px solid var(--line);border-radius:10px;background:#fff}
- pre.keys{margin:10px 0 0;padding:12px 14px;background:#F4F6F7;border-radius:8px;overflow-x:auto;
-  font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:12.5px;line-height:1.7;color:#3A3F42}
-</style></head><body>
-<div class="banner">Это прототип для заявки. Дневник за выбранный срок придуман для показа:
- связи в нём заложены заранее, чтобы было видно, что программа находит настоящее и отсеивает случайное.</div>
-
-<div class="wrap">
-  <p class="eyebrow"><i></i>Прототип · разбор речи: __ENGINE__</p>
-  <h1>Мира</h1>
-  <p style="font-size:18px;margin-top:-4px">Дневник, который ищет причины.</p>
-  <p>Расскажите про свой день обычными словами - так же, как написали бы в мессенджере.
-     Программа спросит, если чего-то не хватает, и скажет, что уже знает про ваши привычки.</p>
-
-  <div class="chat">
-    <div class="feed" id="feed"></div>
-    <div class="bar">
-      <input id="text" placeholder="Например: пил кофе часов в пять, спал часов пять" onkeydown="if(event.key==='Enter')send()">
-      <button class="ghost" id="mic" onclick="listen()" title="Наговорить">🎤</button>
-      <button id="send" onclick="send()">Отправить</button>
-    </div>
-  </div>
-  <p class="hint" id="micnote" style="min-height:18px;margin-top:8px"></p>
-
-  <div class="side">
-    <b>Источники данных</b>
-    <div class="sources">
-      <label class="on"><input type="checkbox" id="src-ring" checked><span>Умное кольцо Sber</span><em>сон, стресс, шаги</em></label>
-      <label><input type="checkbox" disabled><span>Apple Health</span><em>разбор написан, подключение в программе</em></label>
-      <label><input type="checkbox" disabled><span>Health Connect</span><em>для Android, тот же формат</em></label>
-      <label><input type="checkbox" disabled><span>Календарь</span><em>встречи и перелёты как факторы</em></label>
-      <label><input type="checkbox" disabled><span>Погода и город</span><em>давление, смена часового пояса</em></label>
-    </div>
-    <b>Что кольцо намеряло сегодня</b>
-    <div class="ringrow" style="margin-top:10px">
-      <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
-      <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
-      <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
-    </div>
-    <b style="display:block;margin-top:20px">Чем разбирается речь</b>
-    <p class="hint" style="margin-top:8px">Сейчас работает <b>__ENGINE__</b>. Модель понимает живую
-      речь целиком, разбор по правилам знает только частые слова, но работает без интернета
-      и подстраховывает, когда сервис недоступен. Свою модель можно подключить своим ключом -
-      GigaChat, YandexGPT или Claude, как это сделать написано в README.</p>
-
-    <div class="tools">
-      <select id="days">
-        <option value="21">дневник за 3 недели</option>
-        <option value="45">за 1,5 месяца</option>
-        <option value="90">за 3 месяца</option>
-        <option value="120" selected>за 4 месяца</option>
-        <option value="180">за полгода</option>
-      </select>
-      <button class="ghost" onclick="summary()">Показать все выводы</button>
-      <button class="ghost" onclick="reset()">Начать заново</button>
-    </div>
-  </div>
-</div>
-
-<script>
-function lbl(){ for(const id of ['sleep','stress','steps']) document.getElementById(id+'v').textContent = document.getElementById(id).value; }
-
-function add(kind, text, note){
-  const feed = document.getElementById('feed');
-  const div = document.createElement('div');
-  div.className = 'msg ' + kind;
-  div.textContent = text;
-  if(note){ const s = document.createElement('small'); s.textContent = note; div.appendChild(s); }
-  feed.appendChild(div);
-  feed.scrollTop = feed.scrollHeight;
-}
-
-async function send(){
-  const field = document.getElementById('text');
-  const text = field.value.trim();
-  if(!text) return;
-  field.value = '';
-  document.getElementById('send').disabled = true;
-
-  const ring = document.getElementById('src-ring').checked ? {
-    sleep_score: +document.getElementById('sleep').value,
-    stress_level: +document.getElementById('stress').value,
-    steps: +document.getElementById('steps').value
-  } : null;
-
-  try {
-    const r = await fetch('/say', {method:'POST', body: JSON.stringify({text, ring, days: +document.getElementById('days').value})});
-    const d = await r.json();
-    for(const m of d.messages) add(m.kind, m.text, m.note);
-  } catch(e) {
-    add('bot', 'Не получилось связаться с программой: ' + e.message);
-  }
-  document.getElementById('send').disabled = false;
-  field.focus();
-}
-
-async function summary(){
-  const r = await fetch('/summary?days=' + document.getElementById('days').value);
-  const d = await r.json();
-  for(const m of d.messages) add(m.kind, m.text, m.note);
-}
-
-async function reset(){
-  await fetch('/reset', {method:'POST'});
-  document.getElementById('feed').innerHTML = '';
-  hello();
-}
-
-function hello(){
-  add('bot', 'Привет, я Мира. Расскажите, как прошёл день - обычными словами. Например: «пил кофе часов в пять, спал часов пять, с утра тревожно».');
-}
-
-let rec = null, listening = false;
-function listen(){
-  const mic = document.getElementById('mic');
-  const note = document.getElementById('micnote');
-  if(listening){ listening = false; rec && rec.stop(); return; }
-  const Rec = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!Rec){ note.textContent = 'Этот браузер не умеет распознавать речь - откройте страницу в Chrome.'; return; }
-  rec = new Rec(); rec.lang = 'ru-RU'; rec.interimResults = true; rec.continuous = true;
-  let heard = '';
-  rec.onstart = () => { listening = true; mic.textContent = '⏹'; note.textContent = 'Слушаю. Говорите, потом нажмите стоп.'; };
-  rec.onresult = e => {
-    let finalText = '', interim = '';
-    for(let i = 0; i < e.results.length; i++){
-      e.results[i].isFinal ? finalText += e.results[i][0].transcript + ' ' : interim = e.results[i][0].transcript;
-    }
-    heard = (finalText + interim).trim();
-    document.getElementById('text').value = heard;
-  };
-  rec.onerror = e => {
-    listening = false; mic.textContent = '🎤';
-    const reasons = {'not-allowed':'Браузер не дал доступ к микрофону.','no-speech':'Не услышал речь, попробуйте ещё раз.',
-      'audio-capture':'Микрофон не найден.','network':'Распознаванию нужен интернет.'};
-    note.textContent = reasons[e.error] || ('Не получилось: ' + e.error);
-  };
-  rec.onend = () => {
-    if(listening){ rec.start(); return; }
-    mic.textContent = '🎤'; note.textContent = '';
-    if(heard) send();
-  };
-  rec.start();
-}
-
-hello();
-</script></body></html>"""
+def page() -> bytes:
+    """
+    Разметка страницы лежит рядом, в page.html: держать её строкой внутри
+    модуля неудобно - редактор не подсказывает ни в html, ни в javascript.
+    """
+    html = (Path(__file__).parent / "page.html").read_text(encoding="utf-8")
+    return html.replace("__ENGINE__", ENGINE_NAME).encode("utf-8")
 
 
 # ── состояние разговора ───────────────────────────────────────────────────
@@ -418,8 +238,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/":
             # Перезагрузка страницы разговор не сбрасывает: для этого есть
             # кнопка «Начать заново».
-            self._send(PAGE.replace("__ENGINE__", ENGINE_NAME).encode("utf-8"),
-                       "text/html; charset=utf-8")
+            self._send(page(), "text/html; charset=utf-8")
         elif path == "/summary":
             self._json(_summary_step(_days_param(self.path)))
         elif path == "/state":

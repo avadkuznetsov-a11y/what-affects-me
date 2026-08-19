@@ -49,7 +49,8 @@ def test_broken_json_is_a_bad_request(site):
 
 
 def test_too_big_body_is_refused(site):
-    code, _ = _fetch(site + "/say", json.dumps({"text": "я" * 70000}).encode())
+    body = json.dumps({"text": "a" * (server.MAX_BODY + 100)}).encode()
+    code, _ = _fetch(site + "/say", body)
     assert code == 413
 
 
