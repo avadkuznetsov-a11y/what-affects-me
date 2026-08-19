@@ -11,11 +11,12 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
-from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+from bot.telegram import TelegramBot, token_is_shaped_right
 from demo.generate import build
 from wam import dialog
 from wam.derive import derive_factors
@@ -188,7 +189,7 @@ async function summary(){
 }
 
 async function reset(){
-  await fetch('/reset');
+  await fetch('/reset', {method:'POST'});
   document.getElementById('feed').innerHTML = '';
   hello();
 }
@@ -252,6 +253,105 @@ def _diary(days: int = DEFAULT_DAYS):
         return _CACHE[days]
 
 
+class TelegramRunner:
+    """
+    Бот, запущенный со страницы.
+
+    Токен живёт только здесь, в поле объекта в памяти процесса: ни в файле, ни
+    в логе, ни в одном ответе сервера его нет. Перезапустили программу - токен
+    вводится заново, и это правильно: чужой токен на диске никому не нужен.
+    """
+
+    LONG_POLL = 10      # со страницы бота выключают кнопкой, ждать 30 секунд незачем
+
+    def __init__(self, store: DiaryStore, key: str = WEB_KEY) -> None:
+        self.store = store
+        self.key = key
+        self._lock = threading.Lock()
+        self._token = ""
+        self._thread: threading.Thread | None = None
+        self._stop: threading.Event | None = None
+        self.username = ""
+        self.code = ""
+        self.error = ""
+
+    @property
+    def connected(self) -> bool:
+        return self._thread is not None and self._thread.is_alive()
+
+    def connect(self, token: str) -> str:
+        """
+        Проверить токен и начать опрос. Возвращает имя бота. Форму токена
+        проверяем до сети, чтобы не гонять запрос впустую.
+        """
+        token = (token or "").strip()
+        if not token_is_shaped_right(token):
+            raise ValueError("Это не похоже на токен от BotFather. "
+                             "Он выглядит так: 1234567890:строка-из-букв-и-цифр.")
+        if self.connected and token == self._token:
+            # Второй поток опроса на том же токене заводить нельзя: Telegram
+            # ответит 409 и сообщения начнут пропадать у обоих.
+            return self.username
+
+        bot = TelegramBot(token=token, store=self.store, parser=PARSER,
+                          timeout=self.LONG_POLL)
+        username = bot.username()       # сетевой вызов до всяких замков
+
+        with self._lock:
+            self._halt()
+            self._token = token
+            self.username = username
+            self.error = ""
+            self.code = self.store.new_code(self.key)   # код даём только после getMe
+            self._stop = threading.Event()
+            self._thread = threading.Thread(
+                target=bot.run, kwargs={"stop": self._stop, "on_error": self._note},
+                daemon=True)
+            self._thread.start()
+        return username
+
+    def disconnect(self) -> None:
+        with self._lock:
+            self._halt()
+            self._token = ""
+            self.username = ""
+            self.code = ""
+            self.error = ""
+
+    def new_code(self) -> str:
+        """Новый код привязки. Без подключённого бота он бессмысленен."""
+        with self._lock:
+            if not self.connected:
+                return ""
+            self.code = self.store.new_code(self.key)
+            return self.code
+
+    def state(self) -> dict:
+        """Что показать в панели. Токена тут нет и быть не может."""
+        linked = bool(self.store.linked_chats(self.key))
+        return {
+            "connected": self.connected,
+            "username": self.username,
+            "linked": linked,
+            "code": "" if linked else self.code,
+            "error": self.error,
+            "has_env_token": bool(os.environ.get("TELEGRAM_TOKEN", "").strip()),
+        }
+
+    def _note(self, text: str) -> None:
+        """Последняя беда опроса - её показываем в панели, а не только в консоли."""
+        self.error = text
+
+    def _halt(self) -> None:
+        if self._stop is not None:
+            self._stop.set()
+        self._thread = None
+        self._stop = None
+
+
+RUNNER = TelegramRunner(STORE)
+
+
 def _say(text: str, ring: dict | None, days: int) -> dict:
     """
     Один шаг разговора на странице. Вопросы и выводы берём по придуманному
@@ -312,52 +412,126 @@ def _summary(days: int) -> list[dict]:
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path == "/":
+        if not self._ours():
+            return
+        path = urlparse(self.path).path
+        if path == "/":
             # Перезагрузка страницы разговор не сбрасывает: для этого есть
             # кнопка «Начать заново».
             self._send(PAGE.replace("__ENGINE__", ENGINE_NAME).encode("utf-8"),
                        "text/html; charset=utf-8")
-        elif self.path.startswith("/summary"):
+        elif path == "/summary":
             self._json(_summary_step(_days_param(self.path)))
-        elif self.path == "/reset":
-            STORE.get(WEB_KEY).reset()
-            self._json({"ok": True})
+        elif path == "/state":
+            since = _int_param(self.path, "since")
+            diary = STORE.get(WEB_KEY)
+            self._json({"telegram": RUNNER.state(),
+                        "messages": diary.feed(since), "seq": diary.seq})
         else:
             self.send_error(404)
 
     def do_POST(self):
-        if self.path != "/say":
+        if not self._ours():
+            return
+        path = urlparse(self.path).path
+        if path not in ("/say", "/reset", "/telegram/connect",
+                        "/telegram/disconnect", "/telegram/code"):
             self.send_error(404)
             return
+
         payload = self._payload()
         if payload is None:
             return                      # ответ уже отправлен
+
+        if path == "/say":
+            try:
+                text, ring, days = _checked(payload)
+            except ValueError as exc:
+                self._fail(400, str(exc))
+                return
+            self._json(_say(text, ring, days))
+        elif path == "/reset":
+            STORE.get(WEB_KEY).reset()
+            self._json({"ok": True})
+        elif path == "/telegram/connect":
+            self._connect(payload)
+        elif path == "/telegram/disconnect":
+            RUNNER.disconnect()
+            self._json({"ok": True})
+        else:
+            self._json({"ok": True, "code": RUNNER.new_code()})
+
+    def _connect(self, payload: dict) -> None:
+        """
+        Подключение бота. Токен можно ввести в поле или взять из окружения -
+        во втором случае страница токена вообще не видит.
+        """
+        if payload.get("from_env"):
+            token = os.environ.get("TELEGRAM_TOKEN", "")
+        else:
+            token = payload.get("token")
+            token = "" if token is None else str(token)[:200]
         try:
-            text, ring, days = _checked(payload)
+            username = RUNNER.connect(token)
         except ValueError as exc:
-            self.send_error(400, str(exc))
+            self._json({"ok": False, "error": str(exc)})
             return
-        self._json(_say(text, ring, days))
+        except Exception as exc:
+            # Текст ошибки от Telegram уже без токена, но подстрахуемся ещё раз
+            self._json({"ok": False, "error": str(exc).replace(token, "***")})
+            return
+        self._json({"ok": True, "username": username, "code": RUNNER.code})
+
+    def _ours(self) -> bool:
+        """
+        Запрос точно от нашей страницы, а не от чужой, открытой в том же
+        браузере: иначе любой сайт заберёт код привязки к дневнику.
+        """
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
+        if host not in ("127.0.0.1", "localhost", "::1"):
+            self._fail(403, "запрос не с этой страницы")
+            return False
+        origin = self.headers.get("Origin")
+        if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"):
+            self._fail(403, "запрос с другого сайта")
+            return False
+        return True
 
     def _payload(self) -> dict | None:
         """Тело запроса как словарь. При любой беде отвечает сама и отдаёт None."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
-            self.send_error(400, "bad Content-Length")
+            self._fail(400, "непонятная длина запроса")
             return None
         if length < 0 or length > MAX_BODY:
-            self.send_error(413, "body too large")
+            # Тело всё равно надо вычитать, иначе браузер получит обрыв связи
+            # вместо ответа и человек не узнает, что случилось. Совсем большое
+            # не читаем - тогда просто закрываем соединение.
+            if 0 < length <= MAX_BODY * 2:
+                self.rfile.read(length)
+            else:
+                self.close_connection = True
+            self._fail(413, "слишком длинный запрос")
             return None
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
         except (json.JSONDecodeError, UnicodeDecodeError):
-            self.send_error(400, "bad json")
+            self._fail(400, "тело запроса не разобрать")
             return None
         if not isinstance(payload, dict):
-            self.send_error(400, "object expected")
+            self._fail(400, "ожидается объект")
             return None
         return payload
+
+    def _fail(self, code: int, reason: str) -> None:
+        """
+        Отказ с понятной причиной в теле. В строку статуса русский текст
+        писать нельзя: она уходит в latin-1 и запрос падает на кодировке.
+        """
+        self._send(json.dumps({"ok": False, "error": reason},
+                              ensure_ascii=False).encode("utf-8"),
+                   "application/json; charset=utf-8", code)
 
     def log_message(self, *args):
         pass
@@ -366,8 +540,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps(data, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
-    def _send(self, body: bytes, content_type: str):
-        self.send_response(200)
+    def _send(self, body: bytes, content_type: str, code: int = 200):
+        self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -380,6 +554,17 @@ def _days_param(path: str, default: int = DEFAULT_DAYS) -> int:
     if not values:
         return default
     return _clamp_days(values[0], default)
+
+
+def _int_param(path: str, name: str, default: int = 0) -> int:
+    """Целое из строки запроса; что угодно кривое - значение по умолчанию."""
+    values = parse_qs(urlparse(path).query).get(name)
+    if not values:
+        return default
+    try:
+        return max(0, int(values[0]))
+    except (TypeError, ValueError):
+        return default
 
 
 def _clamp_days(value, default: int = DEFAULT_DAYS) -> int:
