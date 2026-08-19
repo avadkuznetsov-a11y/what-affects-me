@@ -14,6 +14,7 @@ import json
 import threading
 from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, urlparse
 
 from demo.generate import build
 from wam.derive import DEVICE_SOURCES, derive_factors
@@ -37,16 +38,20 @@ _RULES = RuleExtractor()
 _MODEL = LLMExtractor(_COMPLETE) if ENGINE_NAME != "правила" else None
 
 
+MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
+MAX_BODY = 64 * 1024
+
+
 def parse_day(text: str, day):
     """Разбор фразы: сначала модель, при сбое или пустом ответе - правила."""
     if _MODEL is not None:
         try:
             record = _MODEL.extract(text, day)
             if record.facts:
-                return record, ENGINE_NAME
+                return record
         except Exception:
             pass
-    return _RULES.extract(text, day), "правила"
+    return _RULES.extract(text, day)
 
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
@@ -258,15 +263,22 @@ class Session:
 
 
 SESSION = Session()
+_SESSION_LOCK = threading.Lock()      # сервер многопоточный, разговор один
 _CACHE: dict[int, tuple] = {}
+_CACHE_LOCK = threading.Lock()
 
 
 def _diary(days: int = DEFAULT_DAYS):
     """Придуманный дневник и найденные в нём связи. Считаем один раз на срок."""
-    if days not in _CACHE:
-        timeline = derive_factors(build(days=days))
-        _CACHE[days] = (timeline, find_links(timeline))
-    return _CACHE[days]
+    ready = _CACHE.get(days)
+    if ready is not None:
+        return ready
+    with _CACHE_LOCK:
+        # пока ждали замок, соседний запрос мог всё посчитать
+        if days not in _CACHE:
+            timeline = derive_factors(build(days=days))
+            _CACHE[days] = (timeline, find_links(timeline))
+        return _CACHE[days]
 
 
 def _facts_note(record: DayRecord) -> str:
@@ -306,13 +318,12 @@ def _handle(text: str, ring: dict | None, days: int) -> list[dict]:
         apply_answer(SESSION.record, SESSION.pending, text)
         if _metrics_snapshot(SESSION.record) == before:
             # ответ не понят - разбираем его как обычную фразу
-            parsed, engine = parse_day(text, SESSION.record.day)
+            parsed = parse_day(text, SESSION.record.day)
             for fact in parsed.facts:
                 SESSION.record.add(fact)
         SESSION.pending = None
-        engine = locals().get("engine", ENGINE_NAME)
     else:
-        parsed, engine = parse_day(text, SESSION.record.day)
+        parsed = parse_day(text, SESSION.record.day)
         for fact in parsed.facts:
             SESSION.record.add(fact)
 
@@ -399,13 +410,15 @@ def _summary(days: int) -> list[dict]:
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
-            SESSION.reset()      # открыли страницу - разговор начинается с чистого листа
+            with _SESSION_LOCK:
+                SESSION.reset()  # открыли страницу - разговор начинается с чистого листа
             self._send(PAGE.replace("__ENGINE__", ENGINE_NAME).encode("utf-8"),
                        "text/html; charset=utf-8")
         elif self.path.startswith("/summary"):
             self._json({"messages": _summary(_days_param(self.path))})
         elif self.path == "/reset":
-            SESSION.reset()
+            with _SESSION_LOCK:
+                SESSION.reset()
             self._json({"ok": True})
         else:
             self.send_error(404)
@@ -414,11 +427,37 @@ class Handler(BaseHTTPRequestHandler):
         if self.path != "/say":
             self.send_error(404)
             return
-        length = int(self.headers.get("Content-Length", 0))
-        payload = json.loads(self.rfile.read(length) or b"{}")
-        messages = _handle(payload.get("text", ""), payload.get("ring"),
-                           int(payload.get("days") or DEFAULT_DAYS))
+        payload = self._payload()
+        if payload is None:
+            return                      # ответ уже отправлен
+        try:
+            text, ring, days = _checked(payload)
+        except ValueError as exc:
+            self.send_error(400, str(exc))
+            return
+        with _SESSION_LOCK:
+            messages = _handle(text, ring, days)
         self._json({"messages": messages})
+
+    def _payload(self) -> dict | None:
+        """Тело запроса как словарь. При любой беде отвечает сама и отдаёт None."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            self.send_error(400, "bad Content-Length")
+            return None
+        if length < 0 or length > MAX_BODY:
+            self.send_error(413, "body too large")
+            return None
+        try:
+            payload = json.loads(self.rfile.read(length) or b"{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            self.send_error(400, "bad json")
+            return None
+        if not isinstance(payload, dict):
+            self.send_error(400, "object expected")
+            return None
+        return payload
 
     def log_message(self, *args):
         pass
@@ -436,12 +475,42 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _days_param(path: str, default: int = DEFAULT_DAYS) -> int:
-    if "days=" not in path:
+    """Срок из строки запроса. Что угодно кривое - берём срок по умолчанию."""
+    values = parse_qs(urlparse(path).query).get("days")
+    if not values:
         return default
+    return _clamp_days(values[0], default)
+
+
+def _clamp_days(value, default: int = DEFAULT_DAYS) -> int:
+    """Срок дневника: только целое число в разумных пределах."""
     try:
-        return max(14, min(365, int(path.split("days=")[1].split("&")[0])))
-    except ValueError:
+        return max(14, min(365, int(value)))
+    except (TypeError, ValueError):
         return default
+
+
+def _checked(payload: dict) -> tuple[str, dict | None, int]:
+    """
+    Разбор тела запроса /say. Кривые данные - это ошибка запроса, а не сбой
+    сервера: строка вместо числа в показаниях кольца раньше доходила до
+    float() внутри разбора и роняла ответ пятисоткой.
+    """
+    text = payload.get("text")
+    text = "" if text is None else str(text)
+    text = text[:MAX_TEXT]
+
+    days = _clamp_days(payload.get("days"))
+
+    ring = payload.get("ring")
+    if ring is not None:
+        if not isinstance(ring, dict):
+            raise ValueError("ring: ожидается объект")
+        for key, value in ring.items():
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"ring: «{key}» должно быть числом")
+        ring = dict(ring)
+    return text, ring, days
 
 
 def main() -> None:
