@@ -188,9 +188,13 @@ def _normalise(metrics: dict[str, float]) -> dict[str, float]:
             out[name] = _between(value, best=50, worst=100)
         elif name == HRV:
             # Вариабельность в миллисекундах: чем выше, тем лучше восстановление.
-            # 20 мс - низко, 100 - высоко; у каждого своя норма, поэтому важна
-            # не сама цифра, а как она гуляет день ото дня.
-            out[name] = _between(value, best=100, worst=20)
+            # Шкала логарифмическая, и это не украшение: разница между 14 и 26
+            # мс для организма больше, чем между 86 и 98, а на прямой линейке
+            # они одинаковы. При линейной шкале падение вариабельности на треть
+            # у человека с низкой нормой не набирало даже балла - то есть самый
+            # важный сигнал прибора терялся. В мире по этой же причине считают
+            # логарифм RMSSD.
+            out[name] = _log_between(value, best=120, worst=10)
         elif name == SLEEP_HOURS:
             # Восемь часов - десятка, четыре - пятёрка, как в разборе речи
             out[name] = round(min(10.0, value / 0.8), 1)
@@ -216,6 +220,18 @@ def _between(value: float, best: float, worst: float) -> float:
     if best == worst:
         return 5.0
     share = (value - worst) / (best - worst)
+    return round(max(0.0, min(1.0, share)) * 10, 1)
+
+
+def _log_between(value: float, best: float, worst: float) -> float:
+    """
+    То же, что `_between`, но по логарифму: у показателя, который меняется в
+    разы, а не на проценты, равные шаги на прямой линейке неравны для тела.
+    """
+    from math import log
+
+    value = max(value, 0.1)
+    share = (log(value) - log(worst)) / (log(best) - log(worst))
     return round(max(0.0, min(1.0, share)) * 10, 1)
 
 

@@ -90,6 +90,21 @@ def which_metric(said: str = "") -> str:
 # Тот же текст без реплики - для тестов и для показа в документации.
 WHICH_METRIC = which_metric()
 
+# Хвост этого вопроса - по нему узнаём его в ленте, какое бы число ни стояло
+# в начале.
+WHICH_METRIC_TAIL = "«выспался», «разбитый», «спокойный день»."
+
+
+def _score_said(text: str) -> float | None:
+    """Число из реплики: «на 4», «четыре». None - числа нет."""
+    number = SCORE_NUMBER.search(text)
+    if number:
+        return float(number.group(1))
+    for word, value in _WORD_NUMBERS.items():
+        if value <= 10 and re.search(rf"\b{word}\b", text):
+            return float(value)
+    return None
+
 # Оценка, названная словом: «пятёрку», «восемь». Список тот же, по которому
 # ответы разбирает `questions.score_in` - двух списков тут быть не должно.
 _SCORE_WORDS = tuple(word for word, value in _WORD_NUMBERS.items() if value <= 10)
@@ -102,6 +117,12 @@ _BARE_SCORE = re.compile(
     r"(?:на\s+|баллов\s+)?"
     r"(?:10|\d|" + "|".join(_SCORE_WORDS) + r")"
     r"(?:\s*(?:из\s*10|балл\w*))?[.!]?$")
+
+
+# Оценка внутри фразы: «на 7, но вчера лёг рано». Разобрать такую целиком мы
+# не смогли, но и «не понял» тут неправда: число человек назвал, непонятно
+# только, про что оно.
+_SCORE_PHRASE = re.compile(r"\bна\s+(?:10|\d)\b")
 
 
 def _bare_score(text: str) -> bool:
@@ -393,13 +414,12 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
         # кладём в тот день, а не в сегодняшний. Ответ на висящий вопрос так не
         # толкуем: «на 7, но вчера лёг рано» - это оценка за сегодня.
         #
-        # Но висящий вопрос глушил день и в развёрнутом рассказе: после «не
-        # понял, что записать» человек начинал «в понедельник был на даче», и
-        # весь его пересказ недели сваливался в сегодня. Ответом на вопрос
-        # бывает только короткая реплика - длинный рассказ разбираем как
-        # рассказ, вместе с названным в нём днём.
-        answer_like = bool(pending) and len(text.split()) <= MAX_ANSWER_WORDS
-        spoken = None if answer_like else day_mentioned(text, now)
+        # Висящий вопрос день не глушит: `day_mentioned` и так смотрит только
+        # первые два слова, а фраза, которая НАЧИНАЕТСЯ с «вчера» или «в
+        # среду», - это рассказ про тот день, а не ответ на вопрос. Пока
+        # висящий вопрос отменял разбор дня, «вчера пил вино» после «а как вы
+        # себя чувствовали?» ложилось в сегодня - тихо и навсегда.
+        spoken = day_mentioned(text, now)
         if spoken is not None:
             record = diary.record_for(spoken)
 
@@ -930,6 +950,14 @@ def asks_us(text: str) -> bool:
 _NOT_UNDERSTOOD_LADDER = (NOTHING_UNDERSTOOD, NOTHING_UNDERSTOOD_AGAIN,
                           NOTHING_UNDERSTOOD_LAST)
 
+# То же самое, когда вопрос уже висит: повторять его нельзя, а молчать невежливо.
+DID_NOT_GET_IT_AGAIN = ("Всё равно не разобрал. Можно совсем просто: "
+                        "«спал плохо», «был зал», «тревожно».")
+DID_NOT_GET_IT_LAST = ("Ладно, не буду мучить. Напишете, когда будет что "
+                       "записать - я тут.")
+
+_DID_NOT_GET_LADDER = (DID_NOT_GET_IT, DID_NOT_GET_IT_AGAIN, DID_NOT_GET_IT_LAST)
+
 
 def _small_talk(diary: Diary, text: str, day: date, origin: str,
                 before_seq: int) -> list[dict]:
@@ -957,15 +985,36 @@ def _small_talk(diary: Diary, text: str, day: date, origin: str,
         diary.say("bot", GREETING_REPLY, origin=origin)
     elif _THANKS.match(lowered):
         diary.say("bot", THANKS_REPLY, origin=origin)
-    elif _bare_score(lowered):
+    elif _bare_score(lowered) or _SCORE_PHRASE.search(lowered):
         # Голая оценка - «на 4» - осмысленная реплика: человек называет балл,
         # просто не сказал чему. Отвечать на неё «не понял» - обидно и неверно;
         # спрашиваем прямо, про что это. Раньше так отвечали только на вопрос
         # «как вы себя чувствовали?», а без висящего вопроса человек получал
         # «не понял» на собственное уточнение.
-        diary.say("bot", which_metric(lowered), origin=origin)
+        #
+        # Но спрашивать одно и то же второй раз - тупик: человек уже ответил
+        # так, как умеет. Тогда записываем самой общей оценкой - настроением, -
+        # и честно говорим, что записали и как поправить.
+        asked_before = any(m["text"].endswith(WHICH_METRIC_TAIL)
+                           for m in diary.messages)
+        score = _score_said(lowered)
+        if asked_before and score is not None:
+            record = diary.record_for(day)
+            fact = Fact("metric", "настроение", score, "diary", quote=text)
+            record.add(fact)
+            diary.say("bot",
+                      "Записал как настроение - это самая общая оценка дня. "
+                      "Если это было про сон или тревогу, скажите словом, поправлю.",
+                      note=facts_note([fact]), origin=origin)
+        else:
+            diary.say("bot", which_metric(lowered), origin=origin)
     elif diary.pending:
-        diary.say("bot", DID_NOT_GET_IT, origin=origin)
+        # Тот же приём, что и с подсказкой ниже: одно и то же «не понял» три
+        # раза подряд человек читает как поломку. Второй раз - другими
+        # словами, третий - отходим в сторону и ждём.
+        said_before = sum(1 for m in diary.messages if m["text"] in _DID_NOT_GET_LADDER)
+        step = min(said_before, len(_DID_NOT_GET_LADDER) - 1)
+        diary.say("bot", _DID_NOT_GET_LADDER[step], origin=origin)
     else:
         # Вопросов не ждём - значит, самое время подсказать, как рассказать.
         # Каждый следующий раз подсказка другая и короче: одна и та же фраза

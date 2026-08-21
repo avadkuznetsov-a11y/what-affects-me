@@ -3,8 +3,8 @@ from datetime import date, timedelta
 
 from wam.derive import derive_factors
 from wam.schema import DayRecord, Fact, Timeline
-from wam.wearables import (NORM_MIN_DAYS, SberRingSource, merge_into, own_norm,
-                           SLEEP, STRESS)
+from wam.wearables import (NORM_MIN_DAYS, SberRingSource, _normalise, merge_into,
+                           own_norm, SLEEP, STRESS)
 
 
 def test_ring_normalises_to_ten_point_scale():
@@ -96,4 +96,27 @@ def test_without_a_week_of_days_the_general_threshold_works():
     оказаться его обычным.
     """
     timeline = derive_factors(_ring_days([30.0, 30.0, 30.0]))
+    assert timeline.days[-1].factor("организм не восстановился") == 1.0
+
+
+def test_hrv_scale_is_logarithmic():
+    """
+    Падение вариабельности с 26 до 14 мс важнее, чем с 98 до 86, хотя на
+    прямой линейке шаг одинаковый. При линейной шкале самый ценный сигнал
+    прибора - провал восстановления у человека с низкой нормой - не набирал
+    даже балла и терялся совсем.
+    """
+    low = _normalise({"вариабельность пульса": 14.0})["вариабельность пульса"]
+    usual = _normalise({"вариабельность пульса": 26.0})["вариабельность пульса"]
+    high = _normalise({"вариабельность пульса": 86.0})["вариабельность пульса"]
+    higher = _normalise({"вариабельность пульса": 98.0})["вариабельность пульса"]
+
+    assert usual - low > higher - high
+    assert usual - low >= 1.0        # столько нужно, чтобы стать фактором
+
+
+def test_hrv_drop_becomes_a_factor():
+    """Пять дней падения после месяца обычных - прибор обязан это заметить."""
+    days = [26.0] * 35 + [14.0] * 5
+    timeline = derive_factors(_ring_days(days))
     assert timeline.days[-1].factor("организм не восстановился") == 1.0

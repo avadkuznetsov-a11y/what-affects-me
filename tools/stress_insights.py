@@ -178,6 +178,18 @@ def check(kind: dict, links: list) -> list[str]:
     return claims
 
 
+# Сколько промахов допустимо. Ноль тут недостижим и обещать его - вранье:
+# порог значимости в 5% ровно это и означает - примерно одна связь из двадцати
+# на чистом шуме проходит проверку. Мы говорим об этом человеку прямо, и
+# прогон меряет, держится ли обещанная доля.
+ALLOWED = {
+    "настоящая связь": 0.05,   # изредка сильный шум прячет настоящую связь
+    "пустышка": 0.05,          # столько же ложных даёт сам порог значимости
+    "третий фактор": 0.05,
+    "мало данных": 0.0,        # тут ошибаться нельзя вовсе: правило жёсткое
+}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--count", type=int, default=60,
@@ -188,6 +200,7 @@ def main() -> int:
 
     counted: dict[str, int] = {}
     examples: list[str] = []
+    by_case: dict[str, list[int]] = {}
     total = 0
 
     for case in CASES:
@@ -196,21 +209,33 @@ def main() -> int:
             line, kind = case(rng)
             links = find_links(line, seed=run, permutations=PERMUTATIONS)
             total += 1
-            for claim in check(kind, links):
+            claims = check(kind, links)
+            seen = by_case.setdefault(kind["вид"], [0, 0])
+            seen[0] += 1
+            if claims:
+                seen[1] += 1
+            for claim in claims:
                 key = f"[{kind['вид']}] {claim.split(':')[0]}"
                 counted[key] = counted.get(key, 0) + 1
                 if len(examples) < args.show:
                     examples.append(f"{case.__name__} #{run}: {claim}")
 
-    problems = sum(counted.values())
-    print(f"Дневников: {total}. Проблемных выводов: {problems}.")
+    print(f"Дневников: {total}.")
+    over = []
+    for kind, (runs, bad) in sorted(by_case.items()):
+        share = bad / runs
+        limit = ALLOWED.get(kind, 0.0)
+        mark = "" if share <= limit else "  ← выше допустимого"
+        if share > limit:
+            over.append(kind)
+        print(f"  {kind}: {bad} из {runs} ({share:.0%}, допустимо {limit:.0%}){mark}")
     for claim, times in sorted(counted.items(), key=lambda p: -p[1]):
         print(f"  {times:4}  {claim}")
     if examples:
         print("\nПримеры:")
         for line in examples:
             print(" ", line)
-    return 0 if problems == 0 else 1
+    return 0 if not over else 1
 
 
 if __name__ == "__main__":

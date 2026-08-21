@@ -113,3 +113,61 @@ def test_choosing_the_best_lag_is_paid_for():
     for link in links:
         # Округление до тысячных делает своё дело, поэтому сравниваем с ним же
         assert link.p_adjusted >= round(min(1.0, link.p_value * 3), 4) - 1e-9
+
+
+def test_usual_good_days_do_not_burn_every_day():
+    """
+    У человека, который стабильно спит на восьмёрку и ходит по восемь тысяч
+    шагов, каждый день горело «хорошо выспался» и «много двигался». Фактор,
+    который случается всегда, ничего не объясняет и в выводы не попадёт
+    никогда - а в записи дня он мозолит глаза.
+    """
+    from wam.derive import derive_factors
+    from wam.wearables import SberRingSource, merge_into
+
+    rng = random.Random(3)
+    line = Timeline()
+    start = date(2026, 5, 1)
+    rows = [{"date": (start + timedelta(days=o)).isoformat(),
+             "sleep_score": 78 + rng.gauss(0, 2),
+             "steps": 8200 + rng.gauss(0, 300)} for o in range(30)]
+    merge_into(line, SberRingSource().read(rows))
+    derive_factors(line)
+
+    burning = [r for r in line.days[10:] if r.factor("хорошо выспался") == 1.0]
+    assert len(burning) <= len(line.days[10:]) * 0.2
+
+
+def test_small_effect_is_not_called_a_link():
+    """
+    Разницу в полбалла человек на себе не различает, а звучит она так же
+    весомо, как разница в два балла - и потом не находится в его жизни.
+    """
+    rng = random.Random(11)
+    line = Timeline()
+    start = date(2026, 6, 1)
+    for offset in range(80):
+        record = DayRecord(day=start + timedelta(days=offset))
+        drank = offset % 2 == 0
+        record.add(Fact("factor", "кофе", 1.0 if drank else 0.0, "diary"))
+        record.add(Fact("metric", "энергия",
+                        6.0 - (0.5 if drank else 0.0) + rng.gauss(0, 0.3), "diary"))
+        line.add(record)
+
+    links = find_links(line, permutations=FAST_PERMUTATIONS)
+    coffee = [l for l in links if l.factor == "кофе"]
+    assert coffee and all(l.strength == "наблюдение" for l in coffee)
+
+
+def test_permutation_p_is_never_a_flat_zero():
+    """
+    «Ни одна из двухсот перестановок» - это не «никогда». Пока ноль принимался
+    как есть, дневник из чистого шума получал уверенный вывод.
+    """
+    from wam.insights import _permutation_p
+
+    rng = random.Random(5)
+    a = [8.0, 8.4, 7.6, 8.2, 7.8, 8.1, 7.9, 8.3, 8.0, 7.7]
+    b = [3.0, 3.4, 2.6, 3.2, 2.8, 3.1, 2.9, 3.3, 3.0, 2.7]
+    p_value = _permutation_p(a, b, 5.0, rng, permutations=200)
+    assert 0 < p_value < 0.01

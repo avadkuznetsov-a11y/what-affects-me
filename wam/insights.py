@@ -46,6 +46,15 @@ OBSERVATION_PERMUTATIONS = 400
 # отказываемся от неё, и ошибиться в эту сторону дешевле.
 WITHIN_MIN_DAYS = 3
 
+# Насколько связь должна двигать показатель, чтобы вообще называться связью.
+# Меньше балла по десятибалльной шкале человек на себе не различает, а слышит
+# как настоящий вывод - и потом не находит его в своей жизни.
+NOTICEABLE_EFFECT = 1.0
+
+# Ниже этого p не опускаем никогда. Ровный ноль означал бы «случайность так не
+# может вообще», а такого не знает ни один тест на трёх десятках дней.
+FLOOR_P = 1e-6
+
 
 @dataclass
 class Link:
@@ -90,7 +99,11 @@ class Link:
             return "наблюдение"
         if self.p_adjusted <= 0.01 and abs(self.effect) >= 1.0:
             return "подтверждено"
-        if self.p_adjusted <= 0.05:
+        # Одной значимости мало: разницу в полбалла человек на себе не заметит,
+        # а звучит она так же весомо, как разница в два. Пока порога на
+        # величину не было, восьмая часть дневников из чистого шума получала
+        # «вероятную связь».
+        if self.p_adjusted <= 0.05 and abs(self.effect) >= NOTICEABLE_EFFECT:
             return "вероятная связь"
         return "наблюдение"
 
@@ -298,7 +311,15 @@ def _test_pair(factor, factor_series, metric, metric_series, lag, rng,
 
 def _permutation_p(group_a: list[float], group_b: list[float], effect: float, rng,
                    permutations: int = PERMUTATIONS) -> float:
-    """Как часто случайное разделение тех же дней даёт не меньший разрыв."""
+    """
+    Как часто случайное разделение тех же дней даёт не меньший разрыв.
+
+    Единица прибавляется и сверху, и снизу нарочно. Без неё редкий случай
+    получает ровно ноль - «случайность так не может никогда», - а это неправда:
+    перемешиваний было всего несколько сотен, и ноль означает лишь «реже, чем
+    один раз из них». На чистом шуме такие нули складывались в уверенные
+    выводы. Так же считают перестановочный тест и в статистике.
+    """
     pool = group_a + group_b
     size = len(group_a)
     observed = abs(effect)
@@ -307,7 +328,35 @@ def _permutation_p(group_a: list[float], group_b: list[float], effect: float, rn
         rng.shuffle(pool)
         if abs(mean(pool[:size]) - mean(pool[size:])) >= observed:
             hits += 1
-    return hits / permutations
+    if hits:
+        return (hits + 1) / (permutations + 1)
+    # Ни одна перестановка не дала такого разрыва. Это не «никогда»: перемешиваний
+    # было несколько сотен, и всё, что тест может сказать сам, - «реже одного
+    # раза из них». Для сильной связи такой потолок губителен: после поправки на
+    # число гипотез настоящий вывод скатывался в наблюдение. Поэтому хвост
+    # оцениваем формулой - обычным двусторонним тестом Уэлча.
+    return min((hits + 1) / (permutations + 1), _welch_p(group_a, group_b))
+
+
+def _welch_p(group_a: list[float], group_b: list[float]) -> float:
+    """
+    Оценка p для разницы средних, когда перестановки упёрлись в своё
+    разрешение. Обычный t-тест Уэлча с нормальным приближением: своей
+    статистической библиотеки в проекте нет и заводить её ради одной формулы
+    незачем, а при двух десятках дней приближение уже достаточно близко.
+    """
+    from math import erf, sqrt
+
+    if len(group_a) < 2 or len(group_b) < 2:
+        return 1.0
+    var_a = pstdev(group_a) ** 2 * len(group_a) / max(1, len(group_a) - 1)
+    var_b = pstdev(group_b) ** 2 * len(group_b) / max(1, len(group_b) - 1)
+    spread = sqrt(var_a / len(group_a) + var_b / len(group_b))
+    if spread == 0:
+        return FLOOR_P      # разброса нет вовсе - но «ноль» мы не обещаем
+    t = abs(mean(group_a) - mean(group_b)) / spread
+    # Двусторонняя вероятность по нормальному распределению
+    return max(FLOOR_P, min(1.0, 2 * (1 - 0.5 * (1 + erf(t / sqrt(2))))))
 
 
 def summarise(timeline: Timeline) -> dict:

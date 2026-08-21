@@ -32,7 +32,10 @@ RULES: list[tuple[str, str, str, float]] = [
     # восстановился организм или работает на износ, - её человек про себя не
     # знает вовсе. Рваная ночь и температура не как обычно тоже видны прибору
     # раньше, чем самому человеку.
-    ("вариабельность пульса", "организм не восстановился", "ниже", 4.0),
+    # Границы вариабельности пересчитаны под логарифмическую шкалу
+    # (`wearables._log_between`): пять баллов - это около 35 мс, семь - около
+    # 57. На прежней прямой линейке те же числа означали совсем другое.
+    ("вариабельность пульса", "организм не восстановился", "ниже", 5.0),
     ("вариабельность пульса", "хорошее восстановление",    "выше", 7.0),
     ("пробуждения за ночь",   "рваная ночь",               "ниже", 4.0),
     ("температура тела",      "температура не как обычно", "ниже", 4.0),
@@ -51,6 +54,10 @@ DEVICE_SOURCES = {"wearable", "sber_ring", "apple_health"}
 # Полбалла - шум, так же считает `today.NOTABLE_GAP`. Температура приходит уже
 # отклонением от нормы человека, её собственный разброс шире - там граница
 # полтора балла, около четверти градуса сверх обычного.
+# Насколько день должен отойти от собственной нормы человека, чтобы считаться
+# не таким, как обычно. Полбалла - это шум, так же считает `today.NOTABLE_GAP`.
+NOTABLE_GAP = 1.0
+
 OWN_NORM: dict[str, float] = {
     "организм не восстановился": 1.0,
     "хорошее восстановление":    1.0,
@@ -83,21 +90,30 @@ def derive_factors(timeline: Timeline) -> Timeline:
             if record.factor(factor_name) is not None:
                 continue      # уже посчитано за этот день, второй раз не нужно
 
-            gap = OWN_NORM.get(factor_name)
-            usual = None
-            if gap is not None:
-                if metric_name not in series:
-                    series[metric_name] = timeline.series("metric", metric_name)
-                usual = own_norm(series[metric_name], record.day)
+            gap = OWN_NORM.get(factor_name, NOTABLE_GAP)
+            if metric_name not in series:
+                series[metric_name] = timeline.series("metric", metric_name)
+            usual = own_norm(series[metric_name], record.day)
 
+            crossed = value < threshold if direction == "ниже" else value > threshold
             if usual is None:
-                # Либо показатель и не сравнивается с собственной нормой, либо
-                # её ещё не набралось - дней у человека меньше недели. Тогда
-                # работает общая граница: она грубая, зато есть с первого дня.
-                hit = value < threshold if direction == "ниже" else value > threshold
-            else:
+                # Своей нормы ещё нет - дней у человека меньше недели. Работает
+                # общая граница: она грубая, зато есть с первого дня.
+                hit = crossed
+            elif factor_name in OWN_NORM:
+                # Показатели, у которых общей границы не бывает вовсе
                 hit = (value < usual - gap if direction == "ниже"
                        else value > usual + gap)
+            else:
+                # У остальных общая граница остаётся - но одной её мало. У
+                # человека, который стабильно спит на восьмёрку и ходит по
+                # восемь тысяч шагов, каждый день горело «хорошо выспался» и
+                # «много двигался»: фактор, который случается всегда, ничего не
+                # объясняет и в выводы не попадёт никогда. Поэтому день должен
+                # ещё и отличаться от его обычного.
+                moved = (value < usual - gap if direction == "ниже"
+                         else value > usual + gap)
+                hit = crossed and moved
             record.add(Fact("factor", factor_name, 1.0 if hit else 0.0, "wearable"))
     return timeline
 

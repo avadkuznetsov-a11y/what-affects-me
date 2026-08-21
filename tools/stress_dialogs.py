@@ -231,10 +231,14 @@ PROFILES: dict[str, list[str]] = {
 
 @dataclass
 class Turn:
-    """Одна реплика и всё, что дневник на неё ответил."""
+    """Одна реплика, ответ дневника и слепок дней сразу после неё."""
 
     said: str
     replies: list[dict]
+    # Сколько фактов в каком дне сразу после этой реплики. Смотреть на дневник
+    # в конце разговора нельзя: поправка дня могла перенести запись, и упрёк
+    # достался бы ходу, который всё сделал правильно.
+    days: dict = field(default_factory=dict)
 
     def bot_text(self) -> str:
         return "\n".join(m["text"] for m in self.replies if m["kind"] != "me")
@@ -456,7 +460,44 @@ def check_denied_but_written(turn: Turn, talk: Talk) -> str:
     return ""
 
 
-CHECKS = [check_denied_but_written, check_not_understood, check_heavy_day, check_silence, check_empty_note,
+def check_day_placement(turn: Turn, talk: Talk) -> str:
+    """
+    Рассказ про прошедший день должен лечь в тот день.
+
+    Ошибка тут дорогая и незаметная: факт уходит не в свои сутки и портит всю
+    статистику - а человек видит бодрое «Записал» и ничего не замечает.
+    """
+    from datetime import date
+    from wam.extract import day_mentioned
+
+    spoken = day_mentioned(turn.said, date.today())
+    if spoken is None:
+        return ""
+    written = [m for m in turn.replies if m["text"].startswith("Записал")
+               and m.get("note")]
+    if not written:
+        return ""
+    if not turn.days.get(spoken):
+        return f"рассказ про {spoken:%d.%m} записан не в тот день"
+    return ""
+
+
+def check_talk_is_not_a_loop(turn: Turn, talk: Talk) -> str:
+    """
+    Один и тот же ответ дневника три раза подряд - это заевшая пластинка.
+
+    Сравниваем вместе с заметкой: «Записал:» повторяется законно, пока за ним
+    каждый раз новые факты.
+    """
+    said = [t.bot_text() + "|" + t.notes() for t in talk.turns if t.bot_text()]
+    for i in range(len(said) - 2):
+        if said[i] and said[i] == said[i + 1] == said[i + 2]:
+            return f"один ответ три раза подряд: «{said[i][:40]}...»"
+    return ""
+
+
+CHECKS = [check_denied_but_written, check_day_placement, check_talk_is_not_a_loop,
+          check_not_understood, check_heavy_day, check_silence, check_empty_note,
           check_repeated_question, check_question_answered, check_invented_habit,
           check_contradiction]
 
@@ -479,7 +520,8 @@ def run_talk(number: int, profile: str, lines: list[str], parser) -> Talk:
     talk.diary = diary
     for line in lines:
         replies = dialog.step(diary, line, parser=parser, origin="stress")
-        talk.turns.append(Turn(line, replies))
+        days = {record.day: len(record.facts) for record in diary.timeline.days}
+        talk.turns.append(Turn(line, replies, days))
     return talk
 
 
