@@ -80,8 +80,34 @@ def _bare_score(text: str) -> bool:
 MAX_DETAIL_WORDS = 12
 
 
+def _polite(text: str) -> bool:
+    """
+    Вежливость: человек поздоровался или поблагодарил, а не пытался ответить.
+
+    Отговорки («ну не знаю», «ладно») сюда НЕ входят: это отказ отвечать, и
+    вопрос от них должен гаснуть - иначе бот превращается в зануду.
+    """
+    lowered = text.strip().lower()
+    return bool(_GREETING.match(lowered) or _THANKS.match(lowered))
+
+
 def _looks_like_detail(text: str) -> bool:
-    return 0 < len(text.split()) <= MAX_DETAIL_WORDS
+    lowered = text.strip().lower()
+    if not lowered or len(lowered.split()) > MAX_DETAIL_WORDS:
+        return False
+    # Приветствие и благодарность - это вежливость, а не ответ на вопрос.
+    # Пока их принимали за деталь, «привет» после вопроса про кофе записывался
+    # как уточнение к кофе, и человек видел «Записал: кофе» на своё «привет».
+    if _GREETING.match(lowered) or _THANKS.match(lowered):
+        return False
+    # Как и невнятное «ага», «ну не знаю» - согласие, а не мера
+    return not _VAGUE.match(lowered)
+
+
+# Реплики, которые ничего не сообщают: человек тянет время или просто
+# откликается. Деталью привычки они быть не могут.
+_VAGUE = re.compile(r"^(ага|угу|ок(ей)?|да|нет|не знаю|ну не знаю|"
+                    r"наверное|потом|ладно|понял\w*|хорошо)\b")
 
 
 def _remember_detail(record: DayRecord, factor: str, text: str) -> Fact | None:
@@ -322,12 +348,16 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
                 added = [f for f in added
                          if not (f.kind == "metric" and f.name == scored.name)]
                 added.append(scored)
-        elif pending:
+        elif pending and not _polite(text):
             # Не признали ответом - вопрос остаётся висеть, но не вечно. Иначе
             # он пропадал насовсем: спросить второй раз мешает asked, а
             # следующая реплика проверялась уже ни против чего. Реплика «на 7,
             # но это скорее из-за того что вчера лёг рано» так теряла и оценку,
             # и сам вопрос.
+            #
+            # «Привет» и «спасибо» срок вопроса не тратят: человек поздоровался,
+            # а не попытался ответить. Иначе три вежливые реплики подряд гасили
+            # вопрос, и настоящий ответ прилетал уже в пустоту.
             diary.wait_longer()
 
         return _answer(diary, record, text, added, answered, ring, links, origin,
@@ -352,8 +382,11 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
         readings = SberRingSource().read([{**ring, "date": record.day.isoformat()}])
         merge_into(diary.timeline, readings)
         derive_factors(diary.timeline)
-        # Показания пришли вместе с этой репликой - им место в том же «Записал»
-        added = added + [f for f in record.facts if f not in known]
+        # Показания идут с каждой репликой, в том числе с «привет». Объявлять их
+        # человеку имеет смысл только вместе с тем, что он рассказал сам: иначе
+        # на приветствие он получает «Записал: мало спал (с кольца)».
+        if added or answered:
+            added = added + [f for f in record.facts if f not in known]
 
     if added:
         # Чем разобрана фраза - техническая деталь, человеку она не нужна.
