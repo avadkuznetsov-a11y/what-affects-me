@@ -22,9 +22,9 @@ from .extract import (LLMExtractor, RuleExtractor, day_mentioned,
 from .habits import missed_days
 from .insights import Link
 from .llm import available_engine
-from .phrases import basis, next_step, say
+from .phrases import basis, days_count, next_step, say
 from .questions import (DETAIL_MARK, NO_STATE, NOTHING_UNDERSTOOD, apply_answer, day_name,
-                        detail_of, gap_question, metric_of,
+                        as_told, detail_of, gap_question, metric_of,
                         next_question, score_in)
 from .schema import DayRecord, Fact
 from .today import observations
@@ -521,11 +521,54 @@ def _wrap_up(diary: Diary, record: DayRecord, origin: str,
     return diary.feed(before_seq)
 
 
+# «Что ты про меня знаешь?», «что там у меня?», «какие выводы?» - это вопрос
+# про дневник, а не запись дня. Отвечать на него «не понял, что записать» -
+# самый быстрый способ показать человеку, что перед ним форма ввода.
+_ABOUT_ME = re.compile(
+    r"(что|чего|чё|скольк\w*).{0,30}"
+    r"(знаешь|известн\w*|запис\w*|помнишь|нашл\w*|виде?шь|выяснил\w*)"
+    r"|какие выводы|что там у меня|что по мне|расскажи про меня"
+    r"|что ты (обо мне|про меня)")
+
+
+def _what_i_know(diary: Diary, day: date) -> str:
+    """
+    Что известно про человека - человеческим языком. Не «данных мало», а
+    сколько дней, что записано сегодня и когда ждать выводов.
+    """
+    days = len(diary.timeline)
+    today = next((r for r in diary.timeline.days if r.day == day), None)
+    habits = [f.name for f in (today.facts if today else [])
+              if f.kind == "factor" and f.value > 0 and f.source not in DEVICE_SOURCES]
+    metrics = [f"{f.name} {as_told(f.name, f.value):g} из 10"
+               for f in (today.facts if today else []) if f.kind == "metric"]
+
+    lines = [f"Дней в дневнике: {days}."]
+    if habits:
+        lines.append("Сегодня записано: " + ", ".join(dict.fromkeys(habits)) + ".")
+    if metrics:
+        lines.append("Самочувствие: " + ", ".join(dict.fromkeys(metrics)) + ".")
+
+    links = [l for l in diary.links() if l.strength != "наблюдение"]
+    if links:
+        lines.append("Что уже вижу: " + say(links[0]))
+    elif days < MIN_DAYS_FOR_HINT:
+        left = MIN_DAYS_FOR_HINT - days
+        lines.append(f"Выводов пока нет: нужно ещё {days_count(left)} записей, "
+                     f"чтобы было с чем сравнивать.")
+    else:
+        lines.append("Надёжных связей пока не набралось - продолжаю следить.")
+    lines.append("Все выводы разом - кнопкой «Показать все выводы» на странице.")
+    return "\n".join(lines)
+
+
 def _small_talk(diary: Diary, text: str, day: date, origin: str,
                 before_seq: int) -> list[dict]:
     """Ответ на реплику, в которой мы ничего не разобрали."""
     lowered = text.strip().lower()
-    if _GREETING.match(lowered):
+    if _ABOUT_ME.search(lowered):
+        diary.say("bot", _what_i_know(diary, day), origin=origin)
+    elif _GREETING.match(lowered):
         diary.say("bot", GREETING_REPLY, origin=origin)
     elif _THANKS.match(lowered):
         diary.say("bot", THANKS_REPLY, origin=origin)
