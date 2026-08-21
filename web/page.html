@@ -125,66 +125,62 @@
  .card.chat{justify-content:space-between;color:var(--ink);gap:10px}
  .card.chat::before{display:none}
 
- /* Список источников рисует скрипт, а ползунки кольца должны стоять сразу под
-    подключённым источником. display:contents отдаёт строки списка общей колонке,
-    и порядок расставляется стилями - разметку скрипта трогать не приходится. */
- .sources{display:flex;flex-direction:column;padding:2px 16px 14px}
- #sources{display:contents}
- /* Настройки источника - подблок под своей строкой: линия слева и отступ
-    показывают, что поля относятся именно к нему. Без этого «Еда» с полями КБЖУ
-    и «Погода» с полем города сливались в одну простыню. */
- .ring,.kbju,.city{margin:0 0 14px;padding:12px 0 12px 12px;
-  border-left:2px solid var(--line)}
- /* Строка источника, под которой идут его настройки, не должна отчёркиваться
-    снизу: иначе линия режет источник от его же полей. */
- .card.food,.card.weather,.card.ring-row{border-bottom:0;padding-bottom:2px}
- /* Порядок колонки: источник, сразу под ним его настройка, и так далее.
-    Неподключённые уходят вниз - правила ниже перебивают это для тех, у кого
-    настройка своя. */
- .card:not(.on){order:8;padding:6px 0;border-bottom:0}
- /* Заголовок группы неподключённых. Псевдоэлемент на первой такой строке -
-    чтобы не заводить в скрипте отдельный узел ради одного слова. */
- .card:not(.on).first-off{margin-top:6px;padding-top:16px;border-top:1px solid var(--hair)}
- .card:not(.on).first-off::after{content:'Пока не подключено';position:absolute;
-  margin-top:-30px;font-size:12px;color:var(--soft)}
- .card:not(.on){position:relative}
- .ring{order:1;display:flex;flex-direction:column;gap:8px;padding:12px 0}
- .ring label{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--text)}
+ /* ── Панель источников ────────────────────────────────────────────────
+    Источник - строка, настройки раскрываются по клику. Разом развёрнутые поля
+    трёх источников превращали панель в простыню, где не видно границ. */
+ .sources{display:flex;flex-direction:column}
+ .src{border-bottom:1px solid var(--hair)}
+ .src summary{list-style:none;display:flex;align-items:center;gap:8px;
+  padding:13px 16px;cursor:pointer}
+ .src summary::-webkit-details-marker{display:none}
+ .src summary b{font-weight:600}
+ .src summary .sub{font-size:12.5px;color:var(--soft)}
+ /* Уголок поворачивается на раскрытии: он и показывает, что строку можно нажать. */
+ .src summary .chev{width:0;height:0;border:4px solid transparent;
+  border-top-color:var(--soft);transform:rotate(-90deg);transition:transform .15s}
+ .src[open] summary .chev{transform:none}
+ .src summary .st{margin-left:auto;font-size:12px;color:var(--soft);white-space:nowrap}
+ .src summary .st.on{color:var(--accent)}
+ .src summary:hover{background:#fafbfc}
+ .src .in{padding:0 16px 14px}
+
+ .ring{display:flex;flex-direction:column;gap:8px}
+ .ring label{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--text)}
  .ring input[type=range]{flex:1;min-width:0;accent-color:var(--accent)}
  .ring span{min-width:46px;text-align:right;font-weight:500;font-variant-numeric:tabular-nums}
- /* Числа КБЖУ вводятся руками, как двигаются ползунки кольца: в продукте они
-    придут из приложения, здесь - из полей и выгрузки. */
- /* Класс блока не должен совпадать с классом строки источника: у строки свой
-    display:flex в ряд, и общее имя разворачивало её в колонку. */
- .card.food{order:2}
- .kbju{order:3;display:flex;flex-direction:column;gap:8px;padding:12px 0}
- .kbju .row{align-items:center;gap:8px}
- /* Подпись рядом с полем, как у ползунков кольца: в подсказку внутри поля
-    слово «Углеводы, г» не влезает и обрезается на середине. */
- .kbju .fields{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
- .kbju label{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--text)}
- .kbju input[type=number]{flex:1;min-width:0;width:100%;padding:9px 10px;font:inherit;
-  font-size:13.5px;color:var(--ink);background:var(--bg);
-  border:1px solid var(--line);border-radius:8px}
+
+ /* Подпись над полем, а не рядом: «Углеводы, г» рядом с полем ужимало само поле
+    до нечитаемой ширины. */
+ .kbju .fields{display:grid;grid-template-columns:1fr 1fr;gap:9px 10px}
+ .kbju label{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--soft)}
+ .kbju input[type=number]{width:100%;padding:7px 9px;font:inherit;font-size:13px;
+  color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px}
+ .kbju .row{margin-top:10px}
+ .kbju details.inner{margin-top:10px;font-size:12.5px}
+ .kbju details.inner summary{padding:0;color:var(--soft);cursor:pointer}
  .kbju textarea{width:100%;box-sizing:border-box;margin-top:8px;padding:9px 11px;
   font:inherit;font-size:13px;color:var(--ink);background:var(--bg);
   border:1px solid var(--line);border-radius:8px;resize:vertical}
- .kbju details{font-size:13px}
- .kbju summary{color:var(--soft);cursor:pointer}
  .kbju code{font-size:12.5px;color:var(--ink)}
- /* Поле города встаёт под своей строкой источника. Строка погоды держит своё
-    место и когда город уже назван: иначе она уезжает к подключённым наверх, а
-    поле остаётся внизу - и человек не понимает, к чему оно относится. */
- .card.weather{order:4}
- .city{order:5;display:flex;flex-direction:column;gap:8px;padding:12px 0}
+
  .city .row{display:flex;align-items:center;gap:10px}
  .city .row input[type=text]{flex:1;min-width:0}
- /* Что погода дала сегодня. Без этого источник работал молча: факторы ложились
-    в дневник, а человек не понимал, включилось что-нибудь или нет. */
- #weather-today{font-size:13px;color:var(--text);line-height:1.5}
- #weather-today b{font-weight:500}
- #weather-today .got{margin-top:4px;color:var(--accent)}
- #weather-today .plain{margin-top:4px;color:var(--soft)}
+ /* Что погода дала сегодня: без этого источник работал молча - факторы ложились
+    в дневник, а человек не понимал, включилось ли что-нибудь. */
+ #weather-today{margin-top:10px;padding:9px 11px;background:#f4f6fa;border-radius:8px;
+  font-size:12.5px;line-height:1.5;color:var(--text)}
+ #weather-today b{font-weight:500;color:var(--ink)}
+ #weather-today .got{margin-top:3px;color:var(--accent)}
+ #weather-today .plain{margin-top:3px;color:var(--soft)}
+
+ /* Неподключённые: тише остальных и одной строкой - это намерение, а не
+    работающий источник. */
+ #sources{padding:12px 16px 14px;background:#fbfcfd}
+ #sources .h{font-size:11.5px;color:var(--soft);margin-bottom:5px}
+ #sources .card{display:block;padding:3px 0;font-size:13px;color:var(--soft);border:0}
+ #sources .card b{font-weight:500}
+ #sources .card em{font-style:normal}
+ #sources .card .state,#sources .card::before{display:none}
 
  select{font:inherit;font-size:13px;color:var(--soft);padding:5px 9px;max-width:210px;
   background:var(--bg);border:1px solid var(--line);border-radius:6px}
@@ -281,51 +277,68 @@
 
     <section class="block" data-panel="sources">
       <div class="head"><h2>Источники</h2></div>
+      <!-- Источник = строка, настройки раскрываются по клику. Пока всё стояло
+           развёрнутым, панель была простынёй: поля, кнопки и серые абзацы шли
+           подряд, и было не видно, где кончается один источник. -->
       <div class="sources">
-        <div id="sources"></div>
-        <div class="ring">
-          <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
-          <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
-          <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
-          <p class="hint">Кольцо здесь передвигается руками - в продукте цифры приходят от устройства.</p>
-        </div>
-        <div class="kbju">
-          <div class="fields">
-            <label>Калории <input id="kcal" type="number" min="0" step="10"></label>
-            <label>Белки, г <input id="protein" type="number" min="0" step="1"></label>
-            <label>Жиры, г <input id="fat" type="number" min="0" step="1"></label>
-            <label>Углеводы, г <input id="carbs" type="number" min="0" step="1"></label>
+        <details class="src" open>
+          <summary><b>Умное кольцо Sber</b><i class="chev"></i><span class="st on">подключено</span></summary>
+          <div class="in ring">
+            <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
+            <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
+            <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
+            <p class="hint">Ползунки здесь двигаются руками - в продукте цифры приходят от
+              устройства. Приложение кольца показывает сон, стресс и активность; пульс и
+              фазы сна доступны выгрузкой.</p>
           </div>
-          <div class="row">
-            <button class="small ghost" onclick="sendFood()">Записать за день</button>
-          </div>
-          <details>
-            <summary>Загрузить выгрузку из приложения</summary>
-            <p class="hint">Строка на день, пять колонок с такой шапкой:<br>
-              <code>дата,калории,белки,жиры,углеводы</code><br>
-              Дата - 2026-08-01 или 01.08.2026, разделитель - запятая или точка с запятой.</p>
-            <textarea id="food-csv" rows="4" placeholder="дата,калории,белки,жиры,углеводы
+        </details>
+
+        <details class="src">
+          <summary><b>Еда</b><span class="sub">КБЖУ</span><i class="chev"></i><span class="st on">подключено</span></summary>
+          <div class="in kbju">
+            <div class="fields">
+              <label>Калории <input id="kcal" type="number" min="0" step="10"></label>
+              <label>Белки, г <input id="protein" type="number" min="0" step="1"></label>
+              <label>Жиры, г <input id="fat" type="number" min="0" step="1"></label>
+              <label>Углеводы, г <input id="carbs" type="number" min="0" step="1"></label>
+            </div>
+            <div class="row">
+              <button class="small ghost" onclick="sendFood()">Записать за день</button>
+            </div>
+            <details class="inner">
+              <summary>Загрузить выгрузку из приложения</summary>
+              <p class="hint">Строка на день, пять колонок с такой шапкой:<br>
+                <code>дата,калории,белки,жиры,углеводы</code><br>
+                Дата - 2026-08-01 или 01.08.2026, разделитель - запятая или точка с запятой.</p>
+              <textarea id="food-csv" rows="4" placeholder="дата,калории,белки,жиры,углеводы
 2026-08-01,2900,70,95,410"></textarea>
-            <div class="row"><button class="small ghost" onclick="sendFood(true)">Загрузить</button></div>
-          </details>
-          <p class="hint" id="food-note">Из чисел получаются такие же факторы дня, как кофе
-            или прогулка: переел, недоел, мало белка, много углеводов. Пороги считаются от
-            обычной суточной нормы взрослого - это не советы по питанию, а способ сравнить
-            ваши дни между собой.</p>
-        </div>
-        <div class="city">
-          <div class="row">
-            <input id="city" type="text" autocomplete="off" placeholder="город, например Москва"
-                   onkeydown="if(event.key==='Enter') setCity()">
-            <button class="small ghost" onclick="setCity()">Сохранить</button>
+              <div class="row"><button class="small ghost" onclick="sendFood(true)">Загрузить</button></div>
+            </details>
+            <p class="hint" id="food-note">Из чисел получаются такие же факторы дня, как кофе
+              или прогулка: переел, недоел, мало белка, много углеводов. Пороги - от обычной
+              суточной нормы взрослого, это не советы по питанию.</p>
           </div>
-          <div id="weather-today" hidden></div>
-          <p class="hint" id="city-note">Назовите город - и давление, температура и облачность
-            станут такими же факторами дня, как кофе или тренировка. Не назовёте - погоды
-            в дневнике просто не будет.</p>
-          <p class="hint" id="weather-from">Данные берём в open-meteo.com: открытые, без ключа
-            и регистрации. История прошлых дней - оттуда же.</p>
-        </div>
+        </details>
+
+        <details class="src" id="src-weather" open>
+          <summary><b>Погода</b><span class="sub" id="city-name">город не назван</span><i class="chev"></i><span class="st">не подключено</span></summary>
+          <div class="in city">
+            <div class="row">
+              <input id="city" type="text" autocomplete="off" placeholder="город, например Москва"
+                     onkeydown="if(event.key==='Enter') setCity()">
+              <button class="small ghost" onclick="setCity()">Сохранить</button>
+            </div>
+            <div id="weather-today" hidden></div>
+            <p class="hint" id="city-note">Назовите город - и давление, температура и облачность
+              станут такими же факторами дня, как кофе или тренировка.</p>
+            <p class="hint" id="weather-from">Данные берём в open-meteo.com: открытые, без ключа
+              и регистрации. История прошлых дней - оттуда же.</p>
+          </div>
+        </details>
+
+        <!-- Источники, которых пока нет. Отдельным списком и тише остальных:
+             это намерение, а не работающая часть. -->
+        <div id="sources"></div>
       </div>
     </section>
 
@@ -406,31 +419,38 @@ const SOURCES = [
 let city = '';
 
 function drawSources(){
+  // Работающие источники стоят в разметке своими строками с настройками.
+  // Скрипт рисует только то, чего пока нет: список коротких строк внизу.
   const box = document.getElementById('sources');
   box.innerHTML = '';
-  let firstOff = true;
+  const head = document.createElement('div');
+  head.className = 'h';
+  head.textContent = 'Пока не подключено';
+  box.appendChild(head);
   for(const source of SOURCES){
-    const on = source.weather ? !!city : source.ready;
+    if(source.ready || source.weather || source.food || source.ring) continue;
     const card = document.createElement('div');
-    card.className = 'card' + (on ? ' on' : '')
-      + (source.weather ? ' weather' : '') + (source.food ? ' food' : '')
-      + (source.ring ? ' ring-row' : '');
-    // Первую неподключённую строку помечаем: над ней рисуется заголовок группы,
-    // чтобы намерения не выглядели наравне с работающими источниками.
-    const hasSetup = source.weather || source.food || source.ring;
-    if(!on && !hasSetup && firstOff){ card.className += ' first-off'; firstOff = false; }
+    card.className = 'card';
     const name = document.createElement('b');
     name.textContent = source.name;
     const note = document.createElement('em');
-    note.textContent = on && source.weather ? source.note + ' - ' + city : source.note;
-    // Состояние словом. Раньше признаком была только точка, и человек не
-    // понимал, что из списка работает, а что просто обозначено.
-    const state = document.createElement('span');
-    state.className = 'state';
-    state.textContent = on ? 'подключено' : 'не подключено';
-    card.append(name, note, state);
+    note.textContent = ' - ' + source.note;
+    card.append(name, note);
     box.appendChild(card);
   }
+  drawWeatherRow();
+}
+
+// Строка погоды живёт в разметке, а состояние у неё меняется: пока города нет,
+// источник и правда не работает, и показывать его подключённым было бы неправдой.
+function drawWeatherRow(){
+  const row = document.getElementById('src-weather');
+  if(!row) return;
+  const st = row.querySelector('.st');
+  const sub = document.getElementById('city-name');
+  st.textContent = city ? 'подключено' : 'не подключено';
+  st.classList.toggle('on', !!city);
+  sub.textContent = city || 'город не назван';
 }
 
 async function setCity(){

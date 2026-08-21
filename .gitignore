@@ -17,3 +17,4 @@ __pycache__/
 # Исходные артборды рядом лежат и весят килобайты - их держим.
 docs/mockups/
 docs/design/mira-interface.html
+web/.city

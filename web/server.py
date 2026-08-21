@@ -326,7 +326,33 @@ def _set_city(value) -> dict:
     diary = STORE.get(WEB_KEY)
     with diary.lock:
         diary.city = city
+    _remember_city(city)
     return {"ok": True, "city": city, "known": found}
+
+
+# Записи дневника живут в памяти процесса - для прототипа этого достаточно.
+# А вот город терять на каждом перезапуске обидно: человек называет его один
+# раз, и это не личная запись, а настройка. Держим её рядом с программой.
+CITY_FILE = Path(__file__).parent / ".city"
+
+
+def _remember_city(city: str) -> None:
+    """Запомнить город между запусками. Не вышло - молча живём дальше."""
+    try:
+        if city:
+            CITY_FILE.write_text(city, encoding="utf-8")
+        elif CITY_FILE.exists():
+            CITY_FILE.unlink()
+    except OSError:
+        pass
+
+
+def _recall_city() -> str:
+    """Город с прошлого запуска. Пусто - его просто ещё не называли."""
+    try:
+        return CITY_FILE.read_text(encoding="utf-8").strip()[:MAX_CITY]
+    except OSError:
+        return ""
 
 
 def _weather_today() -> dict:
@@ -767,6 +793,11 @@ def _checked(payload: dict) -> tuple[str, dict | None, int, int]:
 
 
 def main() -> None:
+    # Город с прошлого запуска: человек назвал его один раз, спрашивать снова
+    # после каждого перезапуска незачем.
+    saved = _recall_city()
+    if saved:
+        STORE.get(WEB_KEY).city = saved
     threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")
