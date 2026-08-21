@@ -285,6 +285,13 @@
           <button class="small ghost" onclick="reset()">Начать заново</button>
         </div>
         <p class="hint" id="counting" hidden>Считаю выводы за выбранный срок - это несколько секунд.</p>
+        <div class="row">
+          <button class="small ghost" onclick="save('text')">Скачать дневник</button>
+          <button class="small ghost" onclick="save('csv')">Таблицей для Excel</button>
+        </div>
+        <p class="hint">Ваши записи одним файлом - чтобы принести врачу не «мне плохо», а дни
+          с цифрами. Придуманный дневник в файл не идёт. Файл собирается в момент нажатия
+          и на сервере не остаётся.</p>
       </div>
     </section>
 
@@ -678,6 +685,28 @@ async function summary(){
   }
   button.disabled = false;
   note.hidden = true;
+}
+
+// Выгрузка дневника. Забираем файл обычным fetch и сохраняем сами, а не
+// ссылкой: так видно, если сервер отказал, и имя файла можно написать
+// по-русски - в заголовке ответа русских букв быть не может, они уходят в
+// latin-1 и роняют ответ.
+async function save(kind){
+  try {
+    const answer = await fetch('/export?format=' + kind);
+    if(!answer.ok) throw new Error('сервер ответил ' + answer.status);
+    const file = URL.createObjectURL(await answer.blob());
+    const link = document.createElement('a');
+    link.href = file;
+    const stamp = new Date().toLocaleDateString('ru-RU').replaceAll('.', '-');
+    link.download = 'дневник-' + stamp + (kind === 'csv' ? '.csv' : '.txt');
+    link.click();
+    // Отпускаем не сразу: браузер ещё не начал сохранять, и отозванная ссылка
+    // оставила бы человека с пустым файлом.
+    setTimeout(() => URL.revokeObjectURL(file), 5000);
+  } catch(e) {
+    trouble('Выгрузка не собралась: ' + e.message);
+  }
 }
 
 async function reset(){

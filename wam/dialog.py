@@ -29,7 +29,7 @@ from .questions import (DETAIL_MARK, NO_STATE, NOTHING_UNDERSTOOD, apply_answer,
 from .schema import DayRecord, Fact
 from .today import observations
 from .wearables import SberRingSource, merge_into
-from . import weather
+from . import drift, weather
 
 # Сколько уточнений за день. Вопрос - это не анкета, а способ разобраться: без
 # «сколько выпили» и «долго ли гуляли» связь получается грубой. Ограничение
@@ -454,6 +454,13 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
     if fresh:
         diary.observed.update(fresh)
         diary.say("bot", "\n".join(fresh), origin=origin)
+
+    # Длительное отклонение - не про сегодня, а про месяц, поэтому идёт после
+    # наблюдений про день: сперва человек слышит про свою запись, потом про фон.
+    # Редкость и повторы держит сам модуль.
+    long_line = drift.notice(diary, record.day)
+    if long_line:
+        diary.say("bot", long_line, origin=origin)
 
     # Дошли до предела вопросов за день - дальше работаем с тем, что рассказали.
     if len(diary.asked) >= MAX_QUESTIONS:

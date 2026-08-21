@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 from datetime import date, timedelta
 from http.server import ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
@@ -15,6 +16,7 @@ from demo.generate import build
 from wam import dialog, weather
 from wam.derive import derive_factors
 from wam.diary import CODE_TRIES_TOTAL, Diary, DiaryStore
+from wam.schema import Fact
 from wam.storage import DIARY_FILE
 
 FAKE_TOKEN = "7654321:" + "xxx-not-a-real-token" * 2
@@ -579,3 +581,72 @@ def test_nonsense_food_numbers_are_refused_with_a_reason(site):
     assert json.loads(body)["ok"] is False
     code, body = _fetch(site + "/food", {})
     assert json.loads(body)["ok"] is False
+
+
+# ── выгрузка дневника ─────────────────────────────────────────────────────
+
+@pytest.fixture
+def written(site):
+    """
+    Записи за несколько дней в дневнике страницы, мимо разговора и разбора речи.
+
+    Прошлые дни `reset()` не трогает - в них весь смысл дневника, - поэтому
+    чистим их тут сами, до и после проверки: дневник у процесса один, и месяц
+    записей, оставленный после себя, увидят соседние тесты.
+    """
+    diary = server.STORE.get(server.WEB_KEY)
+    diary.timeline.days = []
+
+    def write(days: int = 30) -> None:
+        for ago in range(days):
+            record = diary.record_for(date.today() - timedelta(days=ago))
+            record.add(Fact("metric", "энергия", 4.0, "diary"))
+            record.add(Fact("factor", "кофе", 1.0, "diary"))
+
+    yield write
+    diary.timeline.days = []
+
+
+def test_export_gives_back_every_day(site, written):
+    written(30)
+    code, body = _fetch(site + "/export")
+    assert code == 200
+    for ago in range(30):
+        assert (date.today() - timedelta(days=ago)).strftime("%d.%m.%Y") in body
+    assert "дней с записями: 30" in body
+
+
+def test_export_as_a_table_for_excel(site, written):
+    written(5)
+    code, body = _fetch(site + "/export?format=csv")
+    assert code == 200
+    assert body.startswith("\ufeff")                    # иначе Excel покажет кракозябры
+    assert len(body.strip().splitlines()) == 6          # заголовок и пять дней
+
+
+def test_export_holds_only_the_persons_own_diary(site, written):
+    """
+    Придуманный дневник для показа в файл не идёт: человек несёт врачу свои
+    записи, а не наш пример за четыре месяца.
+    """
+    written(3)
+    body = _fetch(site + "/export")[1]
+    assert "дней с записями: 3" in body
+
+
+def test_export_is_not_given_to_another_site(site):
+    """Самое личное, что есть в программе, - и отдаётся оно только своей странице."""
+    assert _fetch(site + "/export",
+                  headers={"Origin": "http://evil.example"})[0] == 403
+    assert _fetch(site + "/export",
+                  headers={"Sec-Fetch-Site": "cross-site"})[0] == 403
+
+
+def test_export_leaves_nothing_on_disk(site, written):
+    """Файл собирается в памяти: рядом с программой он оседать не должен."""
+    written(2)
+    beside = Path(server.__file__).parent
+    before = sorted(path.name for path in beside.iterdir())
+    _fetch(site + "/export")
+    _fetch(site + "/export?format=csv")
+    assert sorted(path.name for path in beside.iterdir()) == before

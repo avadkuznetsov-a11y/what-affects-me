@@ -90,6 +90,10 @@ class Diary:
         self.concluded: frozenset[str] | None = None
         # Наблюдения, уже сказанные вслух: повторять их каждой фразой - шум
         self.observed: set[str] = set()
+        # День, когда говорили про длительное отклонение (`wam/drift.py`).
+        # Фраза про месяц ниже своей нормы тяжёлая, и человек должен слышать её
+        # раз в несколько дней, а не в ответ на каждую запись.
+        self.drift_said: date | None = None
         # День, по которому уже подвели итог: повторять его каждой
         # репликой незачем
         self.wrapped_day = None
@@ -260,6 +264,7 @@ class Diary:
             self.asked = set()
             self.concluded = None
             self.observed = set()
+            self.drift_said = None
             self.wrapped_day = None
             self.gap_asked = None
             self.messages = []

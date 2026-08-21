@@ -20,7 +20,7 @@ from urllib.parse import parse_qs, urlparse
 
 from bot.telegram import TelegramBot, token_is_shaped_right
 from demo.generate import build
-from wam import dialog, food, weather
+from wam import dialog, export, food, weather
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
 from wam.storage import DIARY_FILE
@@ -557,6 +557,32 @@ def _summary(days: int) -> list[dict]:
     return messages
 
 
+def _export(kind: str) -> tuple[bytes, str, str]:
+    """
+    Дневник человека одним файлом: тело, тип и имя файла.
+
+    Отдаём записи самого человека, а не придуманный дневник со страницы: в
+    файле должно лежать то, что он может принести врачу, а не наш показательный
+    пример.
+
+    Это самое личное, что есть в программе, поэтому: файл собирается в памяти и
+    уходит в ответ, на диск сервера ничего не пишется, в лог тоже - `Handler`
+    молчит про все запросы (`log_message`). Отдаётся только своей странице,
+    проверка та же, что у остальных запросов (`_ours`).
+
+    Замок дневника держим на всё время сборки: она короткая, целиком в памяти и
+    никуда не ходит, а читать список дней, пока его правит соседний запрос,
+    нельзя.
+    """
+    diary = STORE.get(WEB_KEY)
+    with diary.lock:
+        if kind == "csv":
+            return (export.as_csv(diary.timeline).encode("utf-8"),
+                    "text/csv; charset=utf-8", "diary.csv")
+        return (export.as_text(diary.timeline).encode("utf-8"),
+                "text/plain; charset=utf-8", "diary.txt")
+
+
 def _short_basis(link) -> str:
     """
     Откуда вывод, без повторов. Полная фраза из phrases.basis() хороша один раз,
@@ -599,6 +625,16 @@ class Handler(BaseHTTPRequestHandler):
             # понять по цифрам, из какого именно, нельзя.
             self._json({"telegram": telegram, "messages": messages, "seq": seq,
                         "city": city, "weather_source": weather.source_name()})
+        elif path == "/export":
+            # Выгрузка ничего не меняет, поэтому GET: страница забирает её
+            # обычным fetch и сохраняет файл сама. Чужому сайту она не достанется
+            # - его отсеет _ours() по Origin и Sec-Fetch-Site.
+            kind = _one_param(self.path, "format")
+            body, kind_header, name = _export(kind)
+            # attachment - на случай, если человек откроет адрес руками: иначе
+            # браузер покажет дневник страницей вместо того, чтобы сохранить.
+            self._send(body, kind_header,
+                       extra={"Content-Disposition": f'attachment; filename="{name}"'})
         else:
             self.send_error(404)
 
@@ -755,10 +791,16 @@ class Handler(BaseHTTPRequestHandler):
         self._send(json.dumps(data, ensure_ascii=False).encode("utf-8"),
                    "application/json; charset=utf-8")
 
-    def _send(self, body: bytes, content_type: str, code: int = 200):
+    def _send(self, body: bytes, content_type: str, code: int = 200,
+              extra: dict[str, str] | None = None):
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        for name, value in (extra or {}).items():
+            # Заголовки уходят в latin-1, как и строка статуса: русское слово
+            # здесь уронило бы ответ. Поэтому имя файла тут только латиницей,
+            # человеческое имя страница ставит сама.
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -772,6 +814,12 @@ def _int_param(path: str, name: str, default: int = 0) -> int:
         return max(0, int(values[0]))
     except (TypeError, ValueError):
         return default
+
+
+def _one_param(path: str, name: str, default: str = "") -> str:
+    """Первое значение параметра из строки запроса; нет его - пустая строка."""
+    values = parse_qs(urlparse(path).query).get(name)
+    return values[0] if values else default
 
 
 def _clamp_days(value, default: int = DEFAULT_DAYS) -> int:
