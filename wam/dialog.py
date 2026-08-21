@@ -377,7 +377,11 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
 
     Вызывается под замком дневника, сети тут нет.
     """
-    if ring:
+    # Показания с прибора - всегда про сегодня: на странице это ползунки, они
+    # показывают сегодняшнее состояние. Когда человек рассказывает про вчера,
+    # запись идёт во вчерашний день, а показания туда попадать не должны -
+    # иначе в прошлом дне появляются выдуманные цифры, которых прибор не мерил.
+    if ring and record.day == date.today():
         known = list(record.facts)
         readings = SberRingSource().read([{**ring, "date": record.day.isoformat()}])
         merge_into(diary.timeline, readings)

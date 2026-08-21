@@ -79,14 +79,46 @@ def detail_of(question: str) -> str:
 _SAME_THING: dict[str, str] = {"вино": "алкоголь", "пиво": "алкоголь"}
 
 
-def detail_question(factors: set[str], asked: set[str] | None = None) -> str | None:
+# Мера у каждой привычки своя. Общего списка мало: во фразе «пил кофе, спал
+# восемь часов» слово «часов» - про сон, а не про кофе, и глушить им вопрос
+# «сколько чашек» нельзя. Поэтому мера проверяется своя на каждую привычку.
+_MEASURE_FOR: dict[str, str] = {
+    "алкоголь":   r"бутылк\w*|бокал\w*|стакан\w*|рюмк\w*|кружк\w*|банк\w*|литр\w*|"
+                  r"\d+\s*(?:бокал|стакан|рюмк|кружк|бутылк)",
+    "кофе":       r"чашк\w*|кружк\w*|стакан\w*|\d+\s*(?:чашк|кружк|кофе)|"
+                  r"(?:одн|дв|тр|четыр|пят)\w*\s+(?:чашк|кружк)",
+    "прогулка":   r"час\w*|минут\w*|полчаса|километр\w*|\bкм\b|шаг\w*",
+    "тренировка": r"час\w*|минут\w*|полчаса|километр\w*|\bкм\b|подход\w*",
+    "работа":     r"час\w*|весь день|целый день|до ноч|допоздна",
+    "аврал":      r"весь день|целый день|к вечеру|с утра|час\w*",
+    "сладкое":    r"кусок|кусочк\w*|мало|много|чуть-чуть|немного|порци\w*|плитк\w*",
+    "много встреч": r"\d+|одн\w*|дв\w*|тр\w*|четыр\w*|пят\w*|шест\w*|сем\w*|восем\w*",
+    "поздний отбой": r"в\s*(?:\d{1,2}|час|два|три|четыре|полноч)|\d{1,2}[:.]\d{2}",
+    "поздний ужин": r"в\s*\d{1,2}|час\w*|\d{1,2}[:.]\d{2}",
+    "экран перед сном": r"час\w*|минут\w*|полчаса|долго|недолго",
+    "перелёт":    r"час\w*|пояс\w*|\bчас(?:ов|а)?\b",
+}
+
+
+def _measure_said(habit: str, said: str) -> bool:
+    """Названа ли в фразе мера ИМЕННО этой привычки."""
+    pattern = _MEASURE_FOR.get(habit)
+    return bool(pattern and re.search(pattern, said))
+
+
+def detail_question(factors: set[str], asked: set[str] | None = None,
+                    said: str = "") -> str | None:
     """
     Что уточнить про названные привычки. None - уточнять нечего.
 
     Порядок вопросов идёт по списку выше, а не по тому, в каком порядке человек
     назвал привычки: спрашивать про алкоголь важнее, чем про сладкое.
+
+    said - фраза человека. Если мера в ней уже названа («бутылку вина», «часа
+    полтора»), не переспрашиваем: это выглядит так, будто его не услышали.
     """
     asked = asked or set()
+    lowered = said.lower()
     # Про что уже спрашивали - в том числе другими словами
     covered = set()
     for name, question in _ASK_DETAIL.items():
@@ -98,6 +130,9 @@ def detail_question(factors: set[str], asked: set[str] | None = None) -> str | N
         if name not in factors:
             continue
         if name in covered or _SAME_THING.get(name, name) in covered:
+            continue
+        # Мера уже названа - переспрашивать значит показать, что не услышали
+        if _measure_said(name, lowered) or _measure_said(_SAME_THING.get(name, name), lowered):
             continue
         return question
     return None
@@ -214,7 +249,7 @@ def next_question(record: DayRecord, links: list[Link] | None = None,
     # Без этого связь получается грубой: два бокала и бутылка окажутся одним и
     # тем же фактом. Спрашиваем по одной детали за раз и только один раз про
     # каждую привычку.
-    detail = detail_question(factors, asked)
+    detail = detail_question(factors, asked, said=record.raw_text or "")
     if detail:
         return detail
 
