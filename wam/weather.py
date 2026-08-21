@@ -236,6 +236,69 @@ def day_factors(today: dict[str, float],
     return facts
 
 
+# Хвост фразы про погодный фактор. Мы говорим только то, что видно в
+# измерениях, и обещаем посмотреть, сходится ли это с днями человека. Про
+# самочувствие и здоровье тут не сказано ничего и сказано быть не может:
+# «от давления болит голова» - это утверждение, которого у нас нет.
+_NOTE_TAIL = "в дневнике это отдельный фактор дня, посмотрю, влияет ли на вас."
+
+
+def day_note(today: dict[str, float],
+             yesterday: dict[str, float] | None = None) -> str:
+    """
+    Одна строка про сегодняшнюю погоду - для разговора, а не для дневника.
+    Пустая строка - говорить нечего.
+
+    Обычная погода не новость: строку отдаём, только когда сработал хотя бы
+    один фактор. Из сработавших называем первый по списку - метеосводка
+    человеку не нужна, ему нужно понять, откуда в дневнике взялся фактор дня.
+
+    Числа берём из тех же показателей, по которым посчитан фактор, - иначе в
+    строке окажется одно, а в дневнике другое.
+    """
+    if not today:
+        return ""
+    hit = {fact.name for fact in day_factors(today, yesterday) if fact.value > 0}
+    if not hit:
+        return ""
+
+    pressure = today.get("давление")
+    was = (yesterday or {}).get("давление")
+    if "резкий перепад давления" in hit and pressure is not None and was is not None:
+        return (f"Давление за сутки скакнуло на {abs(pressure - was):.0f} гПа - "
+                f"{_NOTE_TAIL}")
+    if "низкое давление" in hit and pressure is not None:
+        return f"Давление сегодня низкое, {pressure:.0f} гПа - {_NOTE_TAIL}"
+
+    warmest = today.get("температура днём")
+    if "жара" in hit and warmest is not None:
+        return f"Днём до {warmest:.0f} градусов - {_NOTE_TAIL}"
+    if "холод" in hit and warmest is not None:
+        return (f"Днём {warmest:.0f} градусов, день без оттепели - {_NOTE_TAIL}")
+
+    damp = today.get("влажность")
+    if "сыро" in hit and damp is not None:
+        return f"Влажность за сутки {damp:.0f}% - сырой день, {_NOTE_TAIL}"
+
+    clouds = today.get("облачность")
+    if "пасмурно" in hit and clouds is not None:
+        return f"Небо закрыто на {clouds:.0f}% - {_NOTE_TAIL}"
+    return ""
+
+
+def source_name() -> str:
+    """
+    Чья погода сейчас в ходу - это видно на странице.
+
+    История всегда за open-meteo: открытого архива у Яндекса на тестовом тарифе
+    нет. С ключом Яндекс уточняет сегодняшний день, и по России человек видит за
+    окном именно его, поэтому источником называем Яндекс. Ключ берётся из
+    окружения на каждый вызов: он мог появиться уже после запуска.
+    """
+    return ("Яндекс.Погода" if os.environ.get(YANDEX_KEY_ENV, "").strip()
+            else "open-meteo")
+
+
 def attach(timeline: Timeline, by_day: dict[date, dict[str, float]]) -> int:
     """
     Дописать погодные факторы в дни дневника. Возвращает число добавленных

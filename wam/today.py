@@ -24,6 +24,7 @@ from datetime import date
 from .derive import DEVICE_SOURCES
 from .insights import Link
 from .phrases import factor_phrase, metric_phrase
+from .questions import as_told
 from .schema import DayRecord, Timeline
 
 # Меньше этого сравнивать не с чем: один-два дня «обычным» не назовёшь.
@@ -241,15 +242,19 @@ def _metric_lines(past: list[DayRecord], today: DayRecord) -> list[str]:
         gap = fact.value - usual
         if abs(gap) < NOTABLE_GAP:
             continue
-        words = _BETTER if gap > 0 else _WORSE
-        # У тревоги и головной боли шкала перевёрнута: больше - хуже
-        if fact.name in ("тревога", "головная боль"):
-            words = _WORSE if gap > 0 else _BETTER
-        phrase = words.get(fact.name)
+        # Шкала внутри одна для всех показателей: больше значит лучше. Отдельной
+        # поправки для тревоги и головной боли тут стояла, и она врала - когда
+        # человеку становилось спокойнее, программа говорила «тревожнее
+        # обычного». Хранение приведено к одной стороне, поправка не нужна.
+        phrase = (_BETTER if gap > 0 else _WORSE).get(fact.name)
         if not phrase:
             continue
-        lines.append(f"Сегодня {phrase}: {fact.value:g} против обычных "
-                     f"{usual:.1f} за {_days(len(values))}.".replace(".0 ", " "))
+        # Числа показываем в ту сторону, в какую человек о них говорит: «тревога
+        # 8» для него сильная, хотя внутри это двойка.
+        told_now = as_told(fact.name, fact.value)
+        told_usual = as_told(fact.name, usual)
+        lines.append(f"Сегодня {phrase}: {told_now:g} против обычных "
+                     f"{told_usual:.1f} за {_days(len(values))}.".replace(".0 ", " "))
     return lines
 
 

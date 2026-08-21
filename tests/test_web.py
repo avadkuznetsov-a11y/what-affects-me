@@ -5,13 +5,14 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from datetime import date, timedelta
 from http.server import ThreadingHTTPServer
 
 import pytest
 
 import web.server as server
 from demo.generate import build
-from wam import dialog
+from wam import dialog, weather
 from wam.derive import derive_factors
 from wam.diary import CODE_TRIES_TOTAL, Diary
 
@@ -411,6 +412,92 @@ def test_refusal_reads_the_body_it_refuses(monkeypatch, site):
         assert answer.status == 200
     finally:
         connection.close()
+
+
+# ── погода для панели ─────────────────────────────────────────────────────
+
+@pytest.fixture
+def sky():
+    """
+    Чистая погода до и после проверки. Дневник в проверках один на всех, и
+    забытый в нём город увёл бы соседний тест в настоящую сеть.
+    """
+    weather.forget()
+    yield server.STORE.get(server.WEB_KEY)
+    server.STORE.get(server.WEB_KEY).city = ""
+    weather.forget()
+
+
+def _sky_answer():
+    """Ответ open-meteo за вчера и сегодня: давление за сутки прыгнуло на 7."""
+    today = date.today()
+    return {"daily": {
+        "time": [(today - timedelta(days=1)).isoformat(), today.isoformat()],
+        "temperature_2m_max": [21.0, 22.0],
+        "temperature_2m_min": [12.0, 13.0],
+        "pressure_msl_mean": [1004.0, 1011.0],
+        "relative_humidity_2m_mean": [60, 62],
+        "cloud_cover_mean": [40, 72],
+    }}
+
+
+def test_weather_shows_today_and_what_came_out_of_it(monkeypatch, site, sky):
+    monkeypatch.setattr(weather, "_get", lambda url, params, timeout:
+                        {"results": [{"latitude": 55.75, "longitude": 37.61}]}
+                        if "geocoding" in url else _sky_answer())
+    sky.city = "Москва"
+
+    code, body = _fetch(site + "/weather", {})
+    answer = json.loads(body)
+    assert code == 200 and answer["ok"] is True
+    assert answer["city"] == "Москва" and answer["day"] == date.today().isoformat()
+    assert answer["today"]["давление"] == 1011.0
+    assert answer["today"]["облачность"] == 72.0
+    assert answer["change"]["давление"] == 7.0          # +7 к вчерашнему
+    assert answer["factors"] == ["резкий перепад давления"]
+    assert "низкое давление" in answer["checked"]       # проверено, но не сработало
+    assert "скакнуло на 7 гПа" in answer["note"]
+    assert answer["source"] == "open-meteo"
+
+
+def test_weather_without_a_city_is_empty_and_not_an_error(monkeypatch, site, sky):
+    def boom(*args, **kwargs):
+        raise AssertionError("города нет, а в сеть пошли")
+
+    monkeypatch.setattr(weather, "_get", boom)
+    sky.city = ""
+
+    code, body = _fetch(site + "/weather", {})
+    answer = json.loads(body)
+    assert code == 200 and answer["ok"] is True
+    assert answer["city"] == "" and answer["day"] == ""
+    assert answer["today"] == {} and answer["change"] == {}
+    assert answer["factors"] == [] and answer["checked"] == [] and answer["note"] == ""
+
+
+def test_weather_without_network_is_empty_and_not_an_error(monkeypatch, site, sky):
+    monkeypatch.setattr(weather, "_get", lambda *args, **kwargs: None)
+    sky.city = "Москва"
+
+    code, body = _fetch(site + "/weather", {})
+    answer = json.loads(body)
+    assert code == 200 and answer["ok"] is True
+    assert answer["city"] == "Москва" and answer["day"] == ""
+    assert answer["today"] == {} and answer["factors"] == []
+
+
+def test_weather_needs_post(site, sky):
+    """Запрос ходит в сеть, значит чужая страница не должна звать его картинкой."""
+    assert _fetch(site + "/weather")[0] == 404
+
+
+def test_state_says_which_weather_service_works(monkeypatch, site):
+    """По цифрам не понять, чья это погода, - панель должна знать источник."""
+    monkeypatch.delenv(weather.YANDEX_KEY_ENV, raising=False)
+    assert json.loads(_fetch(site + "/state")[1])["weather_source"] == "open-meteo"
+
+    monkeypatch.setenv(weather.YANDEX_KEY_ENV, "ключа-в-репозитории-нет")
+    assert json.loads(_fetch(site + "/state")[1])["weather_source"] == "Яндекс.Погода"
 
 
 # ── еда числами ───────────────────────────────────────────────────────────

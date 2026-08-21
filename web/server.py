@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from datetime import date
+from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -23,7 +23,7 @@ from demo.generate import build
 from wam import dialog, food, weather
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
-from wam.experiments import Experiment, evaluate
+from wam.experiments import Experiment, can_try, evaluate
 from wam.insights import find_links
 from wam.llm import available_engine
 from wam.phrases import basis, days_count, next_step, period, say
@@ -329,6 +329,50 @@ def _set_city(value) -> dict:
     return {"ok": True, "city": city, "known": found}
 
 
+def _weather_today() -> dict:
+    """
+    Сегодняшняя погода в городе человека и факторы, которые из неё вышли.
+
+    Нужна панели источников: пока погода была видна только в выводах, человек
+    не знал, работает она вообще или нет.
+
+    Города нет, сети нет, сервис молчит - это не ошибка, а обычный ход событий:
+    отвечаем пустыми показателями. Пустой `city` значит «город не назвали»,
+    пустой `day` - «сегодняшних измерений нет».
+
+    `weather.readings` ходит в сеть, поэтому замок дневника берём только чтобы
+    прочитать город, и отпускаем до запроса.
+    """
+    diary = STORE.get(WEB_KEY)
+    with diary.lock:
+        city = diary.city
+
+    by_day = weather.readings(city) if city else {}
+    today = date.today()
+    values = by_day.get(today, {})
+    was = by_day.get(today - timedelta(days=1), {})
+
+    # «+7 к вчера» показываем только по тем показателям, что измерены оба дня:
+    # разница с неизвестным - это не ноль, это ничто.
+    change = {name: round(value - was[name], 1)
+              for name, value in values.items() if name in was}
+    facts = weather.day_factors(values, was or None) if values else []
+
+    return {
+        "ok": True,
+        "city": city,
+        "source": weather.source_name(),
+        "day": today.isoformat() if values else "",
+        "today": values,
+        "change": change,
+        # Что сработало сегодня и что вообще проверялось: без второго списка
+        # спокойный день неотличим от дня, про который мы ничего не знаем.
+        "factors": [fact.name for fact in facts if fact.value > 0],
+        "checked": [fact.name for fact in facts],
+        "note": weather.day_note(values, was or None),
+    }
+
+
 def _food_step(payload: dict, since: int = 0) -> dict:
     """
     Еда числами: КБЖУ за сегодня руками или выгрузка из приложения.
@@ -438,14 +482,22 @@ def _summary(days: int) -> list[dict]:
     messages += [{"kind": "result", "text": say(l), "note": f"{basis(l)} {next_step(l)}"}
                  for l in strong]
 
-    best = next((l for l in strong if not l.confounder), None)
+    # Эксперимент предлагаем только по тому, что человек решает сам. «Уберите
+    # аврал на работе» или «отмените перелёт» - совет, который нельзя выполнить.
+    best = next((l for l in strong if not l.confounder and can_try(l.factor)), None)
     if best:
-        window = min(40, max(14, days // 3))
-        experiment = Experiment.from_link(best, start=timeline.days[-window].day, days=window)
-        verdict = evaluate(experiment, timeline)
-        messages.append({"kind": "bot",
-                         "text": "Проверка сильнейшей связи:\n" + "\n".join(experiment.plan),
-                         "note": verdict.text})
+        # План - это предложение на будущее, и раньше рядом с ним печатался
+        # вердикт по прошлым дням. Получалась бессмыслица: сверху «совпадением
+        # это уже не объяснить», снизу «пока рано делать вывод», и непонятно,
+        # к чему относится и то и другое. Оставляем только предложение.
+        experiment = Experiment.from_link(best, start=date.today(), days=14)
+        messages.append({
+            "kind": "bot",
+            "text": (f"Так это можно проверить на себе за две недели:\n"
+                     + "\n".join(experiment.plan)),
+            "note": "Это не задание, а предложение. Скажете «начали» - "
+                    "буду считать дни и в конце сравню две половины.",
+        })
     return messages
 
 
@@ -474,8 +526,11 @@ class Handler(BaseHTTPRequestHandler):
             with diary.lock:
                 messages, seq = diary.feed(_shown(since, diary.seq)), diary.seq
                 city = diary.city
+            # Какой источник погоды работает - видно в панели: у человека с
+            # ключом Яндекса и без него погода приходит из разных мест, и
+            # понять по цифрам, из какого именно, нельзя.
             self._json({"telegram": telegram, "messages": messages, "seq": seq,
-                        "city": city})
+                        "city": city, "weather_source": weather.source_name()})
         else:
             self.send_error(404)
 
@@ -483,7 +538,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._ours():
             return
         path = urlparse(self.path).path
-        if path not in ("/say", "/summary", "/reset", "/city", "/food",
+        if path not in ("/say", "/summary", "/reset", "/city", "/weather", "/food",
                         "/telegram/connect", "/telegram/disconnect",
                         "/telegram/code", "/telegram/unlink"):
             self._drain()
@@ -511,6 +566,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         elif path == "/city":
             self._json(_set_city(payload.get("city")))
+        elif path == "/weather":
+            # Запрос ходит в сеть за погодой, а не только читает готовое,
+            # поэтому POST: чужая страница не должна дёргать его картинкой.
+            self._json(_weather_today())
         elif path == "/food":
             self._json(_food_step(payload, _seq(payload.get("since"))))
         elif path == "/telegram/connect":

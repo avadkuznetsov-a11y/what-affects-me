@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 
 from .derive import DEVICE_SOURCES, derive_factors
 from .diary import Diary
@@ -257,6 +257,11 @@ def step(diary: Diary, text: str, ring: dict | None = None,
         # в ту из них, которую потом никто не смотрел.
         record = diary.today()
         weather.attach(diary.timeline, sky)
+        # Что из погоды вышло, человек должен услышать, а не только дневник:
+        # пока строку никто не говорил, работающий источник выглядел как
+        # неработающий - фактор молча ложился в день, и узнать про него было
+        # неоткуда до самых выводов.
+        sky_note = weather.day_note(sky.get(now), sky.get(now - timedelta(days=1)))
         before_seq = diary.seq
         pending = diary.pending_question(record.day)
 
@@ -308,13 +313,15 @@ def step(diary: Diary, text: str, ring: dict | None = None,
             diary.wait_longer()
 
         return _answer(diary, record, text, added, answered, ring, links, origin,
-                       links_from_demo, before_seq, hints or [], missed, now)
+                       links_from_demo, before_seq, hints or [], missed, now,
+                       sky_note)
 
 
 def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
             answered: bool, ring: dict | None, links: list[Link], origin: str,
             links_from_demo: bool, before_seq: int,
-            hints: list[Link], missed: list[date], now: date) -> list[dict]:
+            hints: list[Link], missed: list[date], now: date,
+            sky_note: str = "") -> list[dict]:
     """
     Что сказать в ответ. Решаем по тому, что дала именно эта реплика: пока
     решение принималось по накопленной за день записи, на «привет» бот заново
@@ -364,6 +371,15 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
     # мы уже увидели, а не отдельная ветка разговора. Пока оно стояло после,
     # любой уточняющий вопрос про названную привычку («сколько пива?») выходил
     # из ответа раньше - и про эту самую привычку человек не слышал ничего.
+    # Погода - такое же наблюдение про сегодня, и повторов боится так же:
+    # держим её в том же diary.observed. Строка меняется вместе с числами дня,
+    # поэтому за день она скажется один раз и назавтра не повторится слово в
+    # слово. Обычная погода сюда не доходит вовсе - day_note молчит, пока не
+    # сработал хоть один фактор.
+    if sky_note and sky_note not in diary.observed:
+        diary.observed.add(sky_note)
+        diary.say("bot", sky_note, origin=origin)
+
     seen = observations(diary.timeline, record, habits, hints)
     fresh = [line for line in seen if line not in diary.observed]
     if fresh:

@@ -111,20 +111,43 @@
  .card.on{color:var(--ink)}
  .card.on::before{background:var(--accent);border-color:var(--accent)}
  .card:last-child{border-bottom:0}
+ /* Состояние словом: точка в семь пикселей - слишком тихий признак, заказчик
+    смотрел на панель и не понимал, что из этого работает. */
+ .card .state{flex:none;margin-left:auto;font-size:12px;padding:2px 8px;border-radius:999px;
+  border:1px solid var(--line);color:var(--soft);background:var(--bg);white-space:nowrap}
+ .card.on .state{color:var(--accent);border-color:var(--accent)}
+ .card{flex-wrap:wrap}
  .card b{flex:none;font-weight:500}
- .card em{font-style:normal;font-size:13px;color:var(--soft)}
+ /* Пояснение занимает остаток строки и переносится целиком: пока оно делило
+    строку с подписью состояния, «сон, стресс, шаги» рвалось посередине. */
+ .card em{flex:1 1 100%;order:3;font-style:normal;font-size:13px;color:var(--soft);
+  margin-top:2px}
  .card.chat{justify-content:space-between;color:var(--ink);gap:10px}
  .card.chat::before{display:none}
 
  /* Список источников рисует скрипт, а ползунки кольца должны стоять сразу под
     подключённым источником. display:contents отдаёт строки списка общей колонке,
     и порядок расставляется стилями - разметку скрипта трогать не приходится. */
- .sources{display:flex;flex-direction:column;padding:2px 16px 12px}
+ .sources{display:flex;flex-direction:column;padding:2px 16px 14px}
  #sources{display:contents}
+ /* Настройки источника - подблок под своей строкой: линия слева и отступ
+    показывают, что поля относятся именно к нему. Без этого «Еда» с полями КБЖУ
+    и «Погода» с полем города сливались в одну простыню. */
+ .ring,.kbju,.city{margin:0 0 14px;padding:12px 0 12px 12px;
+  border-left:2px solid var(--line)}
+ /* Строка источника, под которой идут его настройки, не должна отчёркиваться
+    снизу: иначе линия режет источник от его же полей. */
+ .card.food,.card.weather,.card.ring-row{border-bottom:0;padding-bottom:2px}
  /* Порядок колонки: источник, сразу под ним его настройка, и так далее.
     Неподключённые уходят вниз - правила ниже перебивают это для тех, у кого
     настройка своя. */
- .card:not(.on){order:8}
+ .card:not(.on){order:8;padding:6px 0;border-bottom:0}
+ /* Заголовок группы неподключённых. Псевдоэлемент на первой такой строке -
+    чтобы не заводить в скрипте отдельный узел ради одного слова. */
+ .card:not(.on).first-off{margin-top:6px;padding-top:16px;border-top:1px solid var(--hair)}
+ .card:not(.on).first-off::after{content:'Пока не подключено';position:absolute;
+  margin-top:-30px;font-size:12px;color:var(--soft)}
+ .card:not(.on){position:relative}
  .ring{order:1;display:flex;flex-direction:column;gap:8px;padding:12px 0}
  .ring label{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--text)}
  .ring input[type=range]{flex:1;min-width:0;accent-color:var(--accent)}
@@ -156,6 +179,12 @@
  .city{order:5;display:flex;flex-direction:column;gap:8px;padding:12px 0}
  .city .row{display:flex;align-items:center;gap:10px}
  .city .row input[type=text]{flex:1;min-width:0}
+ /* Что погода дала сегодня. Без этого источник работал молча: факторы ложились
+    в дневник, а человек не понимал, включилось что-нибудь или нет. */
+ #weather-today{font-size:13px;color:var(--text);line-height:1.5}
+ #weather-today b{font-weight:500}
+ #weather-today .got{margin-top:4px;color:var(--accent)}
+ #weather-today .plain{margin-top:4px;color:var(--soft)}
 
  select{font:inherit;font-size:13px;color:var(--soft);padding:5px 9px;max-width:210px;
   background:var(--bg);border:1px solid var(--line);border-radius:6px}
@@ -290,9 +319,12 @@
                    onkeydown="if(event.key==='Enter') setCity()">
             <button class="small ghost" onclick="setCity()">Сохранить</button>
           </div>
+          <div id="weather-today" hidden></div>
           <p class="hint" id="city-note">Назовите город - и давление, температура и облачность
             станут такими же факторами дня, как кофе или тренировка. Не назовёте - погоды
             в дневнике просто не будет.</p>
+          <p class="hint" id="weather-from">Данные берём в open-meteo.com: открытые, без ключа
+            и регистрации. История прошлых дней - оттуда же.</p>
         </div>
       </div>
     </section>
@@ -361,7 +393,7 @@
 // Источники рисуются из одного списка одним шаблоном: когда появится общий
 // реестр источников, сюда встанет его список, а разметку менять не придётся.
 const SOURCES = [
-  {name: 'Умное кольцо Sber', note: 'сон, стресс, шаги', ready: true},
+  {name: 'Умное кольцо Sber', note: 'сон, стресс, шаги', ready: true, ring: true},
   {name: 'Еда', note: 'словами в рассказе и числами КБЖУ', ready: true, food: true},
   {name: 'Погода и город', note: 'давление, температура, облачность', weather: true},
   {name: 'Apple Health', note: 'разбор написан, подключение в программе', ready: false},
@@ -376,17 +408,27 @@ let city = '';
 function drawSources(){
   const box = document.getElementById('sources');
   box.innerHTML = '';
+  let firstOff = true;
   for(const source of SOURCES){
     const on = source.weather ? !!city : source.ready;
     const card = document.createElement('div');
     card.className = 'card' + (on ? ' on' : '')
-      + (source.weather ? ' weather' : '') + (source.food ? ' food' : '');
+      + (source.weather ? ' weather' : '') + (source.food ? ' food' : '')
+      + (source.ring ? ' ring-row' : '');
+    // Первую неподключённую строку помечаем: над ней рисуется заголовок группы,
+    // чтобы намерения не выглядели наравне с работающими источниками.
+    const hasSetup = source.weather || source.food || source.ring;
+    if(!on && !hasSetup && firstOff){ card.className += ' first-off'; firstOff = false; }
     const name = document.createElement('b');
     name.textContent = source.name;
     const note = document.createElement('em');
-    note.textContent = on ? (source.weather ? source.note + ' - ' + city : source.note)
-                          : source.note + ' - пока не подключено';
-    card.append(name, note);
+    note.textContent = on && source.weather ? source.note + ' - ' + city : source.note;
+    // Состояние словом. Раньше признаком была только точка, и человек не
+    // понимал, что из списка работает, а что просто обозначено.
+    const state = document.createElement('span');
+    state.className = 'state';
+    state.textContent = on ? 'подключено' : 'не подключено';
+    card.append(name, note, state);
     box.appendChild(card);
   }
 }
@@ -403,6 +445,7 @@ async function setCity(){
                       : 'Город записан, но погоду по нему сейчас не достать: '
                         + 'проверьте название или связь с интернетом.');
     drawSources();
+    showWeather();
   } catch(e) {
     trouble('Город не сохранился: ' + e.message);
   }
@@ -743,6 +786,14 @@ async function poll(){
       city = state.city;
       document.getElementById('city').value = city;
       drawSources();
+      showWeather();
+    }
+    if(state.weather_source && state.weather_source !== 'open-meteo'){
+      // Сегодняшний день уточняет Яндекс, но история всё равно из open-meteo -
+      // говорим оба источника, иначе выйдет полуправда.
+      document.getElementById('weather-from').textContent =
+        'Сегодняшнюю погоду берём в ' + state.weather_source
+        + ', историю прошлых дней - в open-meteo.com.';
     }
     draw(state);
   } catch(e) { /* сервер выключили - следующая попытка через две секунды */ }
@@ -773,6 +824,7 @@ function today(){
 }
 
 drawSources();
+showWeather();
 drawPeriods();
 today();
 tab('chat');

@@ -12,9 +12,14 @@
 from __future__ import annotations
 
 from .schema import DayRecord, Fact, Timeline
+from .wearables import own_norm
 
 # Порог, ниже (или выше) которого показание превращается в факт.
 # Шкала общая — 0..10, где больше значит лучше.
+#
+# Для показателей из OWN_NORM порог отсюда - запасной путь: он работает, пока
+# у человека не набралось своих дней. Граница у него общая для всех, то есть
+# заведомо грубая, зато она есть с первого дня.
 RULES: list[tuple[str, str, str, float]] = [
     # метрика датчика,   имя фактора,          направление, порог
     ("качество сна",     "мало спал",          "ниже",      5.0),
@@ -36,6 +41,23 @@ RULES: list[tuple[str, str, str, float]] = [
 
 DEVICE_SOURCES = {"wearable", "sber_ring", "apple_health"}
 
+# Факторы, которые считаются не от общей границы, а от собственной нормы
+# человека (`wearables.own_norm`): важно не само число, а насколько сегодня
+# отличается от его же обычного. Направление берём из RULES - оно там уже есть,
+# а здесь только на сколько баллов день должен отойти от нормы.
+#
+# Балл десятибалльной шкалы - это примерно 8 мс вариабельности, 5 ударов пульса
+# покоя и 0,15 градуса температуры (см. границы в `wearables._normalise`).
+# Полбалла - шум, так же считает `today.NOTABLE_GAP`. Температура приходит уже
+# отклонением от нормы человека, её собственный разброс шире - там граница
+# полтора балла, около четверти градуса сверх обычного.
+OWN_NORM: dict[str, float] = {
+    "организм не восстановился": 1.0,
+    "хорошее восстановление":    1.0,
+    "высокий пульс":             1.0,
+    "температура не как обычно": 1.5,
+}
+
 # Какой фактор из какой метрики получен. Нужно, чтобы не сравнивать
 # показание прибора с ним же: «мало спал» и «качество сна» — одно и то же,
 # и связь между ними в тот же день ничего не объясняет.
@@ -43,7 +65,14 @@ DERIVED_FROM: dict[str, str] = {factor: metric for metric, factor, _, _ in RULES
 
 
 def derive_factors(timeline: Timeline) -> Timeline:
-    """Добавить факторы, посчитанные из показаний приборов."""
+    """
+    Добавить факторы, посчитанные из показаний приборов.
+
+    Ряды показателей для собственной нормы собираем по одному разу: норму
+    спрашивают на каждый день и на каждое правило, а сами показатели за время
+    работы не меняются - дописываются только факторы.
+    """
+    series: dict[str, dict] = {}
     for record in timeline.days:
         for metric_name, factor_name, direction, threshold in RULES:
             if not _from_device(record, metric_name):
@@ -53,7 +82,22 @@ def derive_factors(timeline: Timeline) -> Timeline:
                 continue
             if record.factor(factor_name) is not None:
                 continue      # уже посчитано за этот день, второй раз не нужно
-            hit = value < threshold if direction == "ниже" else value > threshold
+
+            gap = OWN_NORM.get(factor_name)
+            usual = None
+            if gap is not None:
+                if metric_name not in series:
+                    series[metric_name] = timeline.series("metric", metric_name)
+                usual = own_norm(series[metric_name], record.day)
+
+            if usual is None:
+                # Либо показатель и не сравнивается с собственной нормой, либо
+                # её ещё не набралось - дней у человека меньше недели. Тогда
+                # работает общая граница: она грубая, зато есть с первого дня.
+                hit = value < threshold if direction == "ниже" else value > threshold
+            else:
+                hit = (value < usual - gap if direction == "ниже"
+                       else value > usual + gap)
             record.add(Fact("factor", factor_name, 1.0 if hit else 0.0, "wearable"))
     return timeline
 

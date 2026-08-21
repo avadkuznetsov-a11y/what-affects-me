@@ -13,7 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Iterable
 
 from .schema import DayRecord, Fact, Timeline
@@ -127,6 +127,42 @@ def merge_into(timeline: Timeline, readings: Iterable[DailyReading]) -> Timeline
                 continue  # то, что человек сказал сам, важнее показаний прибора
             record.add(Fact("metric", name, value, reading.source))
     return timeline
+
+
+# ── собственная норма человека ────────────────────────────────────────────
+#
+# У вариабельности пульса, пульса покоя и температуры общей для всех границы
+# нет: 30 мс вариабельности у одного человека - обычный день, а у другого
+# тревожный сигнал. Так это считают и в мире: «готовность» Oura сравнивает
+# сегодняшнюю вариабельность со скользящим средним самого человека за 28 дней,
+# туда же идут тренд пульса покоя и отклонение температуры.
+#
+# Окно в 28 дней - это месяц его жизни: в нём уже есть и рабочие недели, и
+# выходные, и простуда, но ещё нет смены сезона.
+NORM_WINDOW_DAYS = 28
+
+# Меньше недели - это не норма, а случайный набор дней: одна рваная ночь в
+# среднем по трём дням сдвигает «обычное» так, что от него нельзя отсчитывать.
+NORM_MIN_DAYS = 7
+
+
+def own_norm(series: dict[date, float], day: date) -> float | None:
+    """
+    Собственная норма человека по показателю на этот день: среднее по его
+    прошлым дням внутри окна. None - дней ещё мало, отсчитывать не от чего.
+
+    Считаем по дням ДО названного: сегодняшнее значение в свою же норму
+    попадать не должно, иначе отклонение смазывается о само себя.
+
+    На вход идёт готовый ряд (`Timeline.series`), а не дневник целиком: норму
+    спрашивают на каждый день и на каждое правило, и перебирать ради неё все
+    факты заново - лишняя работа.
+    """
+    first = day - timedelta(days=NORM_WINDOW_DAYS)
+    past = [value for when, value in series.items() if first <= when < day]
+    if len(past) < NORM_MIN_DAYS:
+        return None
+    return sum(past) / len(past)
 
 
 def _normalise(metrics: dict[str, float]) -> dict[str, float]:

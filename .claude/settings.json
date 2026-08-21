@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(docker:*)",
+      "Bash(docker compose:*)",
+      "Bash(pkill:*)",
+      "Bash(lsof:*)",
+      "Bash(node:*)",
+      "Bash(head:*)",
+      "Bash(tail:*)",
+      "Bash(wc:*)",
+      "Bash(diff:*)",
+      "Bash(cat:*)",
+      "Bash(awk:*)",
+      "Bash(sort:*)",
+      "Bash(nohup:*)",
+      "Bash(open:*)"
+    ]
+  }
+}

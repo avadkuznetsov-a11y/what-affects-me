@@ -211,3 +211,69 @@ def test_step_writes_weather_into_the_diary(monkeypatch):
     assert record.factor("резкий перепад давления") == 1.0
     assert record.factor("пасмурно") == 1.0
     assert record.factor("жара") == 0.0
+
+
+# ── погода в разговоре ────────────────────────────────────────────────────
+
+def test_ordinary_weather_is_not_news():
+    """Про обычный день говорить нечего: фактора нет - и строки нет."""
+    calm = {"давление": 1014.0, "температура днём": 18.0,
+            "облачность": 20.0, "влажность": 55.0}
+    assert weather.day_note(calm, {"давление": 1013.0}) == ""
+    assert weather.day_note({}) == ""
+
+
+def test_note_names_the_number_behind_the_factor():
+    note = weather.day_note({"давление": 1004.0}, {"давление": 1011.0})
+    assert "на 7 гПа" in note
+    assert "влияет ли на вас" in note
+
+
+def test_weather_factor_is_said_in_the_feed_and_only_once(monkeypatch):
+    """
+    Погодный фактор молча ложился в дневник, и человек про него не знал вовсе.
+    Теперь про него говорится строкой - но один раз, а не на каждую реплику.
+    """
+    from wam import dialog
+    from wam.diary import DiaryStore
+
+    today = date.today()
+    daily = {
+        "time": [(today - timedelta(days=1)).isoformat(), today.isoformat()],
+        "temperature_2m_max": [14.0, 15.0],
+        "temperature_2m_min": [8.0, 9.0],
+        "pressure_msl_mean": [1011.0, 1004.0],
+        "relative_humidity_2m_mean": [60, 62],
+        "cloud_cover_mean": [40, 45],
+    }
+    monkeypatch.setattr(weather, "_get", _answers(PLACE, {"daily": daily}))
+
+    diary = DiaryStore().get("web")
+    diary.city = "Москва"
+    said = dialog.step(diary, "Пил кофе, спалось так себе", parser=dialog.Parser())
+    assert any("скакнуло на 7 гПа" in message["text"] for message in said)
+
+    again = dialog.step(diary, "Ещё была тренировка", parser=dialog.Parser())
+    assert not any("скакнуло на 7 гПа" in message["text"] for message in again)
+
+
+def test_calm_weather_says_nothing_in_the_feed(monkeypatch):
+    """Обычная погода в разговоре не появляется - это не новость."""
+    from wam import dialog
+    from wam.diary import DiaryStore
+
+    today = date.today()
+    daily = {
+        "time": [(today - timedelta(days=1)).isoformat(), today.isoformat()],
+        "temperature_2m_max": [18.0, 19.0],
+        "temperature_2m_min": [11.0, 12.0],
+        "pressure_msl_mean": [1013.0, 1014.0],
+        "relative_humidity_2m_mean": [55, 57],
+        "cloud_cover_mean": [30, 35],
+    }
+    monkeypatch.setattr(weather, "_get", _answers(PLACE, {"daily": daily}))
+
+    diary = DiaryStore().get("web")
+    diary.city = "Москва"
+    said = dialog.step(diary, "Пил кофе, спалось так себе", parser=dialog.Parser())
+    assert not any("влияет ли на вас" in message["text"] for message in said)
