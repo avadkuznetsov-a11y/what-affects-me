@@ -100,6 +100,24 @@ _MEASURE_FOR: dict[str, str] = {
 }
 
 
+# Пометка, что деталь уточнена. Обычную цитату разборщик кладёт в каждый факт,
+# поэтому по одному её наличию судить нельзя - нужен явный признак.
+DETAIL_MARK = "уточнено: "
+
+
+def _detail_written(record: DayRecord, habit: str) -> bool:
+    """
+    Деталь про эту привычку уже записана: человек на вопрос ответил, и ответ
+    лежит рядом с фактом. Память разговора перезапуск не переживает, а факты
+    переживают - поэтому спрашиваем именно факты, а не то, что помним.
+    """
+    for fact in record.facts:
+        if (fact.kind == "factor" and fact.name == habit
+                and DETAIL_MARK in (fact.quote or "")):
+            return True
+    return False
+
+
 def _measure_said(habit: str, said: str) -> bool:
     """Названа ли в фразе мера ИМЕННО этой привычки."""
     pattern = _MEASURE_FOR.get(habit)
@@ -107,7 +125,7 @@ def _measure_said(habit: str, said: str) -> bool:
 
 
 def detail_question(factors: set[str], asked: set[str] | None = None,
-                    said: str = "") -> str | None:
+                    said: str = "", record: DayRecord | None = None) -> str | None:
     """
     Что уточнить про названные привычки. None - уточнять нечего.
 
@@ -133,6 +151,8 @@ def detail_question(factors: set[str], asked: set[str] | None = None,
             continue
         # Мера уже названа - переспрашивать значит показать, что не услышали
         if _measure_said(name, lowered) or _measure_said(_SAME_THING.get(name, name), lowered):
+            continue
+        if record is not None and _detail_written(record, name):
             continue
         return question
     return None
@@ -200,8 +220,16 @@ def gap_question(missed: list[date], today: date) -> str:
 
 
 def next_question(record: DayRecord, links: list[Link] | None = None,
-                  asked: set[str] | None = None) -> str | None:
-    """Один вопрос, который стоит задать после этой записи. None - вопросов нет."""
+                  asked: set[str] | None = None,
+                  added: list[Fact] | None = None,
+                  said: str = "") -> str | None:
+    """
+    Один вопрос, который стоит задать после этой записи. None - вопросов нет.
+
+    added - что добавила именно эта реплика. Деталь спрашиваем только про это:
+    иначе бот возвращается к привычке, о которой речь шла час назад, и человек
+    справедливо не понимает, при чём тут она.
+    """
     asked = asked or set()
     if not record.facts:
         return NOTHING_UNDERSTOOD
@@ -249,7 +277,14 @@ def next_question(record: DayRecord, links: list[Link] | None = None,
     # Без этого связь получается грубой: два бокала и бутылка окажутся одним и
     # тем же фактом. Спрашиваем по одной детали за раз и только один раз про
     # каждую привычку.
-    detail = detail_question(factors, asked, said=record.raw_text or "")
+    # Про что спрашивать деталь: про названное ЭТОЙ фразой. Если фраза была про
+    # самочувствие, к привычкам часовой давности возвращаться незачем - человек
+    # уже про другое говорит. Откат ко всему дню оставлен для тех, кто зовёт нас
+    # без added: они про отдельные реплики ничего не знают.
+    about = factors if added is None else {
+        f.name for f in added if f.kind == "factor" and f.value > 0}
+    detail = detail_question(about, asked,
+                             said=said or record.raw_text or "", record=record)
     if detail:
         return detail
 

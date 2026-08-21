@@ -52,8 +52,15 @@ class DayRecord:
                          if f.kind == fact.kind and f.name == fact.name), None)
         if existing is not None:
             from_device = existing.source not in ("diary", "")
-            if from_device and fact.source in ("diary", ""):
+            told_now = fact.source in ("diary", "")
+            if from_device and told_now:
                 self.facts.remove(existing)     # рассказ вытесняет прибор
+            elif told_now and not from_device and fact.value != existing.value:
+                # Человек сказал про то же другое: «сил ноль» после «сил на 3».
+                # Свежее слово вытесняет прежнее - он уточняет свой день, а не
+                # спорит сам с собой. Пока этого не было, поправка пропадала:
+                # в дневнике оставалась первая цифра.
+                self.facts.remove(existing)
             else:
                 return                          # иначе оставляем то, что было
         self.facts.append(fact)

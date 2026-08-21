@@ -23,7 +23,7 @@ from .habits import missed_days
 from .insights import Link
 from .llm import available_engine
 from .phrases import basis, next_step, say
-from .questions import (NO_STATE, NOTHING_UNDERSTOOD, apply_answer, day_name,
+from .questions import (DETAIL_MARK, NO_STATE, NOTHING_UNDERSTOOD, apply_answer, day_name,
                         detail_of, gap_question, metric_of,
                         next_question, score_in)
 from .schema import DayRecord, Fact
@@ -60,6 +60,10 @@ THANKS_REPLY = "Пожалуйста. Будет что записать - пи�
 # Короткий отказ на случай, когда вопрос уже висит: повторять его слово в слово
 # нельзя, а молчать в ответ на непонятую фразу - невежливо.
 DID_NOT_GET_IT = "Не понял. Скажите обычными словами, что было и как вы себя чувствовали."
+
+# Человек повторил то, что уже в дневнике. Отвечать ему «не понял» - неправда:
+# понял, просто нового ничего нет.
+ALREADY_KNOWN = "Это у меня уже записано. Если что-то было ещё - расскажите."
 
 # «А как вы себя чувствовали?» спрашивает не про конкретный показатель, поэтому
 # голая оценка к нему не привязывается: семь - это про что?
@@ -124,8 +128,12 @@ def _remember_detail(record: DayRecord, factor: str, text: str) -> Fact | None:
     detail = text.strip()
     for index, fact in enumerate(record.facts):
         if fact.kind == "factor" and fact.name == factor and fact.value > 0:
-            # Факт неизменяемый - собираем новый с дописанной деталью
-            quote = f"{fact.quote} / {detail}" if fact.quote else detail
+            # Факт неизменяемый - собираем новый с дописанной деталью.
+            # Пометка нужна, чтобы отличить уточнение от обычной цитаты: её
+            # разборщик кладёт в каждый факт, и без пометки бот считал бы
+            # уточнённым всё подряд и не спрашивал деталей вовсе.
+            marked = f"{DETAIL_MARK}{detail}"
+            quote = f"{fact.quote} / {marked}" if fact.quote else marked
             updated = dataclasses.replace(fact, quote=quote)
             record.facts[index] = updated
             return updated
@@ -362,14 +370,14 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
 
         return _answer(diary, record, text, added, answered, ring, links, origin,
                        links_from_demo, before_seq, hints or [], missed, now,
-                       sky_note)
+                       sky_note, parsed)
 
 
 def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
             answered: bool, ring: dict | None, links: list[Link], origin: str,
             links_from_demo: bool, before_seq: int,
             hints: list[Link], missed: list[date], now: date,
-            sky_note: str = "") -> list[dict]:
+            sky_note: str = "", parsed: DayRecord | None = None) -> list[dict]:
     """
     Что сказать в ответ. Решаем по тому, что дала именно эта реплика: пока
     решение принималось по накопленной за день записи, на «привет» бот заново
@@ -401,6 +409,12 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
     elif not answered:
         # Реплика ничего не добавила и ответом на вопрос не была - «Записал»
         # писать не о чем, отвечаем по-человечески.
+        #
+        # Но если человек повторил то, что уже записано, «не понял» - неправда
+        # и обида: он-то сказал понятное. Так и говорим.
+        if parsed is not None and parsed.facts:
+            diary.say("bot", ALREADY_KNOWN, origin=origin)
+            return diary.feed(before_seq)
         return _small_talk(diary, text, record.day, origin, before_seq)
 
     # Про пропущенные дни спрашиваем раньше всего остального: вчерашний день
@@ -445,7 +459,7 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
     if len(diary.asked) >= MAX_QUESTIONS:
         question = None
     else:
-        question = next_question(record, links, diary.asked)
+        question = next_question(record, links, diary.asked, added=added, said=text)
     if question:
         if question == diary.pending:
             # Тот же вопрос второй раз подряд - самая быстрая причина бросить
