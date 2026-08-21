@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from typing import Callable
 
 Complete = Callable[[str], str]
@@ -107,6 +108,13 @@ def yandexgpt_complete(model: str = "yandexgpt-lite", timeout: int = 30) -> Comp
     return complete
 
 
+# По каким словам в ответе 400 понятно, что дело в самом запросе, а не в
+# ключе или деньгах. Всё остальное - не повод спрашивать второй раз.
+_ABOUT_REQUEST = re.compile(
+    r"unexpected|unsupported|not supported|invalid.*(field|parameter|property)|"
+    r"extra input|thinking|max_tokens|temperature", re.IGNORECASE)
+
+
 def _ask_claude(body: dict, key: str, timeout: int) -> dict | None:
     """
     Один запрос к Claude. None - сервис не принял тело запроса (ответ 400):
@@ -127,9 +135,20 @@ def _ask_claude(body: dict, key: str, timeout: int) -> dict | None:
                                     context=ssl_context()) as response:
             return json.loads(response.read())
     except urllib.error.HTTPError as error:
-        if error.code == 400:
-            return None
-        raise
+        if error.code != 400:
+            raise
+        # Ответ 400 бывает двух разных смыслов, и путать их дорого: одно дело
+        # «модель не знает такого поля» - тогда спрашиваем иначе, другое дело
+        # «кончились деньги на ключе» - тогда повтор бессмыслен, а молчаливый
+        # откат на словарь выглядит как поломка разбора речи.
+        detail = ""
+        try:
+            detail = json.loads(error.read()).get("error", {}).get("message", "")
+        except Exception:
+            pass
+        if detail and not _ABOUT_REQUEST.search(detail):
+            raise RuntimeError(detail) from error
+        return None
 
 
 def claude_complete(model: str = "claude-sonnet-5", timeout: int = 30) -> Complete:

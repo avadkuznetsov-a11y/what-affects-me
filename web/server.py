@@ -624,7 +624,10 @@ class Handler(BaseHTTPRequestHandler):
             # ключом Яндекса и без него погода приходит из разных мест, и
             # понять по цифрам, из какого именно, нельзя.
             self._json({"telegram": telegram, "messages": messages, "seq": seq,
-                        "city": city, "weather_source": weather.source_name()})
+                        "city": city, "weather_source": weather.source_name(),
+                        # Молчаливый откат на словарь - обман: на странице
+                        # написано, что речь разбирает модель, а она молчит.
+                        "model_error": PARSER.last_error})
         elif path == "/export":
             # Выгрузка ничего не меняет, поэтому GET: страница забирает её
             # обычным fetch и сохраняет файл сама. Чужому сайту она не достанется

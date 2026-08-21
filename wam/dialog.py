@@ -18,14 +18,17 @@ from datetime import date, timedelta
 from .derive import DEVICE_SOURCES, derive_factors
 from .diary import Diary
 from .extract import (HEAVY_WORDS as _HEAVY_WORDS, LLMExtractor, RuleExtractor,
-                      day_mentioned, measured_number)
+                      _WORD_NUMBERS, SCORE_NUMBER, day_mentioned,
+                      measured_number)
 from .habits import missed_days
 from .insights import Link
 from .llm import available_engine
 from .phrases import basis, days_count, next_step, say
-from .questions import (DETAIL_MARK, NO_STATE, NOTHING_UNDERSTOOD, apply_answer, day_name,
-                        as_told, detail_of, gap_question, metric_of,
-                        next_question, score_in)
+from .questions import (DETAIL_MARK, NO_STATE, NOTHING_UNDERSTOOD,
+                        NOTHING_UNDERSTOOD_AGAIN, NOTHING_UNDERSTOOD_LAST,
+                        apply_answer,
+                        as_told, day_name, detail_of, for_day, gap_question,
+                        habit_for_measure, metric_of, next_question, score_in)
 from .schema import DayRecord, Fact
 from .today import observations
 from .wearables import SberRingSource, merge_into
@@ -67,11 +70,38 @@ ALREADY_KNOWN = "Это у меня уже записано. Если что-т�
 
 # «А как вы себя чувствовали?» спрашивает не про конкретный показатель, поэтому
 # голая оценка к нему не привязывается: семь - это про что?
-WHICH_METRIC = ("Семь - это про что: сон, тревога, силы, настроение? "
-                "Можно и словами: «выспался», «разбитый», «спокойный день».")
+def which_metric(said: str = "") -> str:
+    """
+    «Семь - это про что?» Число берём из самой реплики: спрашивать про семь,
+    когда человек сказал «на четыре», - значит показать, что его не читали.
+    """
+    number = SCORE_NUMBER.search(said.lower())
+    named = number.group(1) if number else ""
+    if not named:
+        for word, value in _WORD_NUMBERS.items():
+            if value <= 10 and re.search(rf"\b{word}\b", said.lower()):
+                named = str(value)
+                break
+    head = f"{named} - это про что" if named else "Это про что"
+    return (f"{head}: сон, тревога, силы, настроение? "
+            "Можно и словами: «выспался», «разбитый», «спокойный день».")
 
-# Оценка без единого слова про самочувствие: «7», «на 7», «баллов 7».
-_BARE_SCORE = re.compile(r"^(?:на\s+)?(?:10|\d)(?:\s*(?:из\s*10|балл\w*))?$")
+
+# Тот же текст без реплики - для тестов и для показа в документации.
+WHICH_METRIC = which_metric()
+
+# Оценка, названная словом: «пятёрку», «восемь». Список тот же, по которому
+# ответы разбирает `questions.score_in` - двух списков тут быть не должно.
+_SCORE_WORDS = tuple(word for word, value in _WORD_NUMBERS.items() if value <= 10)
+
+
+# Оценка без единого слова про самочувствие: «7», «на 7», «баллов 7», а ещё
+# «где-то на пятёрку» и «на троечку» - так говорят не реже, чем цифрой.
+_BARE_SCORE = re.compile(
+    r"^(?:где-?то\s+|примерно\s+|наверное\s+|ну\s+)?"
+    r"(?:на\s+|баллов\s+)?"
+    r"(?:10|\d|" + "|".join(_SCORE_WORDS) + r")"
+    r"(?:\s*(?:из\s*10|балл\w*))?[.!]?$")
 
 
 def _bare_score(text: str) -> bool:
@@ -95,6 +125,19 @@ def _polite(text: str) -> bool:
     return bool(_GREETING.match(lowered) or _THANKS.match(lowered))
 
 
+# Мера в ответе про привычку: число, слово-число или прямая оценка количества.
+# Без этого деталью считалась любая короткая реплика - и «меня не было неделю,
+# сейчас расскажу» записывалось уточнением к прогулке.
+_MEASURE_WORDS = re.compile(
+    r"\d|"
+    r"\b(?:один|одну|одна|два|две|три|четыре|пять|шесть|семь|восемь|"
+    r"девять|десять|полтора|полчаса|чуть|немного|"
+    r"пара|пары|пару|несколько|почти|совсем|"
+    r"минут\w*|часа?\w*|чашк\w*|бокал\w*|стакан\w*|литр\w*|раз\w*|"
+    r"штук\w*|км|килом\w*|шаг\w*|бутыл\w*|кружк\w*|порци\w*)\b|"
+    r"\b(?:утром|днём|днем|вечером|ночью|после|перед|до|в обед)\b")
+
+
 def _looks_like_detail(text: str) -> bool:
     lowered = text.strip().lower()
     if not lowered or len(lowered.split()) > MAX_DETAIL_WORDS:
@@ -105,7 +148,11 @@ def _looks_like_detail(text: str) -> bool:
     if _GREETING.match(lowered) or _THANKS.match(lowered):
         return False
     # Как и невнятное «ага», «ну не знаю» - согласие, а не мера
-    return not _VAGUE.match(lowered)
+    if _VAGUE.match(lowered):
+        return False
+    # Спрашивали про меру - значит в ответе должна быть мера. Иначе человек
+    # просто продолжил рассказ, и разбирать его надо обычным путём.
+    return bool(_MEASURE_WORDS.search(lowered))
 
 
 # Реплики, которые ничего не сообщают: человек тянет время или просто
@@ -152,6 +199,12 @@ class Parser:
         self.engine = engine
         self.rules = RuleExtractor()
         self.model = LLMExtractor(complete) if complete and engine != "правила" else None
+        # Почему модель не сработала в прошлый раз. Пустая строка - всё в
+        # порядке. Нужна, чтобы страница не врала: пока откат на словарь был
+        # молчаливым, человек читал «речь разбирает Claude» и не понимал, почему
+        # разбор вдруг стал хуже. А причина бывает простая - кончились деньги
+        # на ключе или нет сети.
+        self.last_error = ""
 
     @classmethod
     def from_environment(cls) -> "Parser":
@@ -175,8 +228,10 @@ class Parser:
 
         try:
             record = self.model.extract(text, day, context)
-        except Exception:
+        except Exception as error:
+            self.last_error = str(error)[:200]
             return by_rules
+        self.last_error = ""
         if not record.facts:
             return by_rules
 
@@ -337,7 +392,14 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
         # Рассказ бывает про прошедший день: «вчера пил вино». Такую запись
         # кладём в тот день, а не в сегодняшний. Ответ на висящий вопрос так не
         # толкуем: «на 7, но вчера лёг рано» - это оценка за сегодня.
-        spoken = None if pending else day_mentioned(text, now)
+        #
+        # Но висящий вопрос глушил день и в развёрнутом рассказе: после «не
+        # понял, что записать» человек начинал «в понедельник был на даче», и
+        # весь его пересказ недели сваливался в сегодня. Ответом на вопрос
+        # бывает только короткая реплика - длинный рассказ разбираем как
+        # рассказ, вместе с названным в нём днём.
+        answer_like = bool(pending) and len(text.split()) <= MAX_ANSWER_WORDS
+        spoken = None if answer_like else day_mentioned(text, now)
         if spoken is not None:
             record = diary.record_for(spoken)
 
@@ -361,6 +423,14 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
         # меня знаешь?» - это не «сколько выпили».
         question_to_us = asks_us(text)
         detail = "" if question_to_us else (detail_of(pending) if pending else "")
+        # Спросили про самочувствие, а человек отвечает мерой: «часа полтора».
+        # Это ответ про привычку, про которую шла речь, и терять его нельзя.
+        # Но вопрос про самочувствие при этом остаётся висеть: на него-то не
+        # ответили, а снимать чужой вопрос уточнением - терять оценку дня.
+        guessed = False
+        if not detail and pending and not question_to_us:
+            detail = habit_for_measure(record, text)
+            guessed = bool(detail)
         answered = (bool(pending) and not question_to_us
                     and _answers(record, pending, text))
         # Из вопроса к программе берём только самочувствие: «третий день болит
@@ -374,11 +444,17 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
         # Спросили деталь привычки («сколько чашек кофе») - ответ надо принять,
         # иначе разговор выглядит издевательством: бот сам спросил и сам же не
         # понял. Деталь дописываем к факту привычки, чтобы она осталась в дне.
-        if detail and not answered and _looks_like_detail(text):
+        # Деталь - это ответ про меру, а не новый рассказ. Если в реплике есть
+        # что записать («весь день на фастфуде»), она не уточнение к прошлой
+        # привычке, даже когда похожа на него словом «весь».
+        detail_only = False
+        if detail and not answered and not added and _looks_like_detail(text):
             kept = _remember_detail(record, detail, text)
             if kept is not None:
-                diary.forget_question()
-                answered = True
+                detail_only = True
+                if not guessed:
+                    diary.forget_question()   # спросили про меру - и получили
+                    answered = True
                 if kept not in added:
                     added = added + [kept]
 
@@ -407,14 +483,15 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
 
         return _answer(diary, record, text, added, answered, ring, links, origin,
                        links_from_demo, before_seq, hints or [], missed, now,
-                       sky_note, parsed)
+                       sky_note, parsed, detail_only)
 
 
 def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
             answered: bool, ring: dict | None, links: list[Link], origin: str,
             links_from_demo: bool, before_seq: int,
             hints: list[Link], missed: list[date], now: date,
-            sky_note: str = "", parsed: DayRecord | None = None) -> list[dict]:
+            sky_note: str = "", parsed: DayRecord | None = None,
+            detail_only: bool = False) -> list[dict]:
     """
     Что сказать в ответ. Решаем по тому, что дала именно эта реплика: пока
     решение принималось по накопленной за день записи, на «привет» бот заново
@@ -467,8 +544,12 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
         # Чем разобрана фраза - техническая деталь, человеку она не нужна.
         # А вот день назвать надо, если запись легла не в сегодняшний: человек
         # должен видеть, что его «вчера» мы поняли именно как вчера.
-        when = "" if record.day == now else f" за {day_name(record.day, now)}"
-        diary.say("bot", f"Записал{when}:", note=facts_note(added), origin=origin)
+        when = "" if record.day == now else f" {for_day(record.day, now)}"
+        # Ответ на вопрос про меру - это уточнение уже записанного, а не новая
+        # запись. «Записал: тренировка» на «часа полтора» человек читает как
+        # «он записал тренировку второй раз».
+        head = "Уточнил" if detail_only else "Записал"
+        diary.say("bot", f"{head}{when}:", note=facts_note(added), origin=origin)
     elif not answered:
         # Реплика ничего не добавила и ответом на вопрос не была - «Записал»
         # писать не о чем, отвечаем по-человечески.
@@ -743,7 +824,11 @@ TRY_WITHOUT_REPLY = (
 _ANNOYED = re.compile(
     r"достал|заколебал|отстань|отвали|хватит вопрос|сколько можно|"
     r"не хочу (?:писать|рассказывать|отвечать)|"
-    r"ничего не (?:хочу|буду) (?:писать|рассказывать)|не сегодня|"
+    r"ничего не (?:хочу|буду) (?:писать|рассказывать)|"
+    # «не сегодня» отсюда убрано намеренно: «не сегодня, а позавчера» - это
+    # поправка дня, а не отказ, и дневник отвечал на неё «вопросов больше не
+    # будет» вместо переноса записи.
+    r"сегодня не (?:буду|хочу|могу)|"
     r"без вопросов|перестань спрашивать")
 
 ANNOYED_REPLY = ("Понял, вопросов на сегодня больше не будет. Дневник от этого "
@@ -785,7 +870,11 @@ _ABOUT_ME = re.compile(
     r"(что|чего|чё|скольк\w*).{0,30}"
     r"(знаешь|известн\w*|запис\w*|помнишь|нашл\w*|виде?шь|выяснил\w*)"
     r"|какие выводы|что там у меня|что по мне|расскажи про меня"
-    r"|что ты (обо мне|про меня)")
+    r"|что ты (обо мне|про меня)"
+    # «Ну а ты что скажешь?» - человек просит дневник высказаться. Это тот же
+    # вопрос про себя, только заданный вежливо, и «не понял» на него - обидно.
+    r"|(?:а )?ты что (?:скажешь|думаешь|видишь)|что (?:ты )?скажешь"
+    r"|тво[её] мнение|как тебе это|что думаешь")
 
 
 def _what_i_know(diary: Diary, day: date) -> str:
@@ -837,6 +926,11 @@ def asks_us(text: str) -> bool:
                 or _HOW_SURE.search(lowered) or _TRY_WITHOUT.search(lowered))
 
 
+# Подсказки «не понял» по порядку: каждая следующая короче и мягче.
+_NOT_UNDERSTOOD_LADDER = (NOTHING_UNDERSTOOD, NOTHING_UNDERSTOOD_AGAIN,
+                          NOTHING_UNDERSTOOD_LAST)
+
+
 def _small_talk(diary: Diary, text: str, day: date, origin: str,
                 before_seq: int) -> list[dict]:
     """Ответ на реплику, в которой мы ничего не разобрали."""
@@ -869,13 +963,21 @@ def _small_talk(diary: Diary, text: str, day: date, origin: str,
         # спрашиваем прямо, про что это. Раньше так отвечали только на вопрос
         # «как вы себя чувствовали?», а без висящего вопроса человек получал
         # «не понял» на собственное уточнение.
-        diary.say("bot", WHICH_METRIC, origin=origin)
+        diary.say("bot", which_metric(lowered), origin=origin)
     elif diary.pending:
         diary.say("bot", DID_NOT_GET_IT, origin=origin)
     else:
-        # Вопросов не ждём - значит, самое время подсказать, как рассказать
-        diary.expect(NOTHING_UNDERSTOOD, day)
-        diary.say("ask", NOTHING_UNDERSTOOD, origin=origin)
+        # Вопросов не ждём - значит, самое время подсказать, как рассказать.
+        # Каждый следующий раз подсказка другая и короче: одна и та же фраза
+        # третий раз подряд выглядит как сломанный автомат.
+        said_before = sum(1 for m in diary.messages
+                          if m["text"] in _NOT_UNDERSTOOD_LADDER)
+        hint = _NOT_UNDERSTOOD_LADDER[min(said_before, len(_NOT_UNDERSTOOD_LADDER) - 1)]
+        if hint is NOTHING_UNDERSTOOD_LAST:
+            diary.say("bot", hint, origin=origin)     # уже не вопрос, а пауза
+        else:
+            diary.expect(hint, day)
+            diary.say("ask", hint, origin=origin)
     return diary.feed(before_seq)
 
 

@@ -124,6 +124,23 @@ def _measure_said(habit: str, said: str) -> bool:
     return bool(pattern and re.search(pattern, said))
 
 
+def habit_for_measure(record: DayRecord, said: str) -> str:
+    """
+    К какой привычке дня относится названная мера. Пустая строка - ни к какой.
+
+    Нужно, когда висит общий вопрос про самочувствие, а человек отвечает
+    «часа полтора»: это ответ про привычку, о которой шла речь, и «не понял»
+    на него - обида. Берём последнюю названную привычку, чья мера подходит:
+    «часа полтора» - про прогулку или тренировку, «бокала три» - про алкоголь.
+    """
+    lowered = said.lower()
+    names = [f.name for f in record.facts if f.kind == "factor" and f.value > 0]
+    for name in reversed(names):
+        if _measure_said(name, lowered):
+            return name
+    return ""
+
+
 def detail_question(factors: set[str], asked: set[str] | None = None,
                     said: str = "", record: DayRecord | None = None) -> str | None:
     """
@@ -163,6 +180,21 @@ NOTHING_UNDERSTOOD = (
     "например: «пил кофе, спал часов пять, с утра тревожно»."
 )
 
+# Та же мысль другими словами. Одна и та же подсказка слово в слово на каждую
+# непонятную реплику - это заевшая пластинка: человек уже прочитал её, и второй
+# раз она читается как «ты опять сделал не так».
+NOTHING_UNDERSTOOD_AGAIN = (
+    "Всё ещё не могу разобрать. Хватит и одной строки: что было и как "
+    "самочувствие - «зал, потом бургер, спал плохо»."
+)
+
+# Третий раз подряд объяснять бесполезно: человек либо шутит, либо ему сейчас
+# не до дневника. Отходим в сторону и ждём.
+NOTHING_UNDERSTOOD_LAST = (
+    "Похоже, сейчас не до записей - это нормально. Напишете, когда будет что "
+    "сказать, я никуда не денусь."
+)
+
 NO_STATE = (
     "Записал. А как вы себя чувствовали? Без этого не с чем связывать привычки - "
     "хватит пары слов: «выспался», «разбитый», «спокойный день»."
@@ -195,6 +227,17 @@ def day_name(day: date, today: date) -> str:
     if ago == 2:
         return "позавчера"
     return _WEEKDAY_NAMES[day.weekday()]
+
+
+def for_day(day: date, today: date) -> str:
+    """
+    Как сказать «про этот день» внутри фразы: «за вчера», «в понедельник».
+
+    Отдельно от `day_name`, потому что предлог у названий разный: «за вчера»
+    правильно, а «за в понедельник» - нет.
+    """
+    name = day_name(day, today)
+    return name if name.startswith(("в ", "во ")) else f"за {name}"
 
 
 def gap_question(missed: list[date], today: date) -> str:
@@ -237,7 +280,9 @@ def next_question(record: DayRecord, links: list[Link] | None = None,
     factors = {f.name for f in record.facts if f.kind == "factor" and f.value > 0}
     metrics = {f.name for f in record.facts if f.kind == "metric"}
 
-    if factors and not metrics:
+    # Про самочувствие спрашиваем один раз за разговор: вопрос общий, и второй
+    # раз он звучит как «ты не ответил», хотя человек просто рассказывал дальше.
+    if factors and not metrics and NO_STATE not in asked:
         return NO_STATE
 
     # Если по названной привычке уже проверяется гипотеза, спрашиваем ровно то,

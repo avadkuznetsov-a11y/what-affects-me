@@ -57,12 +57,12 @@ def test_model_metrics_are_limited_to_known_names():
     """Модель не должна придумывать свои показатели - по ним не набрать статистики."""
     def fake(_prompt):
         return ('{"metrics":[{"name":"сон","value":4},{"name":"аура","value":9}],'
-                '"factors":[{"name":"ссора с руководителем","value":1}]}')
+                '"factors":[{"name":"переезд","value":1}]}')
 
-    record = LLMExtractor(fake).extract("поругался, потом не мог уснуть", date(2026, 8, 1))
+    record = LLMExtractor(fake).extract("переезжали, потом не мог уснуть", date(2026, 8, 1))
     assert record.metric("качество сна") == 4.0     # «сон» сведён к общему имени
     assert record.metric("аура") is None            # выдумка отброшена
-    assert record.factor("ссора с руководителем") == 1.0
+    assert record.factor("переезд") == 1.0          # чего нет в словаре - как есть
 
 
 def test_measure_next_to_the_number_is_recognised():
@@ -229,3 +229,23 @@ def test_day_can_be_found_anywhere_for_corrections():
     assert day_mentioned("а нет, вру, это был вторник", today) is None
     assert day_mentioned("а нет, вру, это был вторник", today,
                          anywhere=True) == date(2026, 8, 18)
+
+
+
+def test_quarrels_collapse_to_one_factor():
+    """
+    «Поругался с женой», «ссора с тёщей», «наорал начальник» - это один фактор.
+
+    Пока у каждой ссоры было своё имя, ни одна не набирала дней и в выводы не
+    попадала никогда, хотя на сон ссора влияет сильнее почти всего остального.
+    """
+    for said in ("поругался с женой вечером", "была ссора с тёщей",
+                 "начальник орал на всех"):
+        assert RULES.extract(said, date.today()).factor("ссора") == 1.0
+
+
+def test_negation_after_the_habit():
+    """«Сладкого не было» - это отсутствие привычки, а не привычка."""
+    record = RULES.extract("ел рыбу и овощи, сладкого не было", date.today())
+    assert record.factor("сладкое") == 0.0
+    assert record.factor("рыба") == 1.0

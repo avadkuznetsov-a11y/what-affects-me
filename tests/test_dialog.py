@@ -155,13 +155,30 @@ def test_only_new_facts_are_repeated_back():
 
 
 def test_the_hanging_question_is_not_asked_again_word_for_word():
-    """Вопрос уже висит, а человек рассказал ещё одну привычку - не спрашиваем заново."""
+    """
+    Вопрос уже висит, а человек рассказал ещё одну привычку - слово в слово
+    его не повторяем. Спросить про новую привычку при этом можно: это другой
+    вопрос и про то, что человек сказал только что.
+    """
     diary = DiaryStore().get("web")
     _step(diary, "Пил кофе часов в пять")
     question = diary.pending
 
-    assert question not in [m["text"] for m in _step(diary, "была тренировка")]
-    assert diary.pending == question
+    said = [m["text"] for m in _step(diary, "была тренировка")]
+    assert question not in said
+    assert diary.pending != question       # либо тот же висит, либо новый задан
+
+
+def test_state_question_is_asked_once_a_day():
+    """«А как вы себя чувствовали?» второй раз за разговор - это допрос."""
+    diary = DiaryStore().get("web")
+    _step(diary, "Пил кофе часов в пять")
+    _step(diary, "ну как-то так")
+    _step(diary, "была тренировка")
+    _step(diary, "вечером пиво")
+
+    asked = [m["text"] for m in diary.messages if m["kind"] == "ask"]
+    assert asked.count(dialog.NO_STATE) <= 1
 
 
 def test_the_conclusion_tail_is_not_repeated_word_for_word():
@@ -439,7 +456,9 @@ def test_doubt_about_method_is_answered():
 def test_bare_score_without_pending_question_asks_what_about():
     diary = DiaryStore().get("web")
     messages = _step(diary, "на 4")
-    assert dialog.WHICH_METRIC in [m["text"] for m in messages]
+    said = [m["text"] for m in messages]
+    assert dialog.which_metric("на 4") in said
+    assert "4 - это про что" in " ".join(said)      # число берём из реплики
 
 
 def test_wrong_day_moves_the_record():

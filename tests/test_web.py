@@ -650,3 +650,15 @@ def test_export_leaves_nothing_on_disk(site, written):
     _fetch(site + "/export")
     _fetch(site + "/export?format=csv")
     assert sorted(path.name for path in beside.iterdir()) == before
+
+
+def test_state_tells_when_the_model_failed(site, monkeypatch):
+    """
+    Молчаливый откат на словарь - обман: на странице написано, что речь
+    разбирает модель, а она молчит. Страница должна получить причину.
+    """
+    monkeypatch.setattr(server.PARSER, "last_error", "credit balance is too low")
+
+    code, body = _fetch(site + "/state")
+    assert code == 200
+    assert json.loads(body)["model_error"] == "credit balance is too low"

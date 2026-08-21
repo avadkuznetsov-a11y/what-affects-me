@@ -41,6 +41,11 @@ OBSERVATION_MIN_DAYS = 3
 # третьего знака.
 OBSERVATION_PERMUTATIONS = 400
 
+# Сколько дней нужно внутри одной части при проверке третьего фактора. Три -
+# это мало для вывода, но проверка тут другая: мы не объявляем связь, а
+# отказываемся от неё, и ошибиться в эту сторону дешевле.
+WITHIN_MIN_DAYS = 3
+
 
 @dataclass
 class Link:
@@ -158,13 +163,24 @@ def find_links(timeline: Timeline, seed: int = 0,
     # пяток, часть «связей» возникает просто потому, что гипотез много.
     # Без этой поправки продукт врёт уверенным тоном — и теряет доверие
     # на первом же случае, когда человек проверит вывод сам.
-    tests = max(1, len(timeline.factor_names()) * len(timeline.metric_names()))
+    # Гипотез не «фактор × показатель», а втрое больше: у каждой пары мы
+    # смотрим три задержки и оставляем самую выраженную. Выбор лучшего из трёх
+    # сам по себе завышает эффект, и не учитывать это - значит объявлять
+    # выводом каждую десятую случайность. На дневнике из чистого шума так и
+    # выходило: четыре «связи» на сорок дневников.
+    tests = max(1, len(timeline.factor_names()) * len(timeline.metric_names())
+                * (MAX_LAG_DAYS + 1))
     from .habits import implied_here
 
     for link in best.values():
         link.p_adjusted = round(min(1.0, link.p_value * tests), 4)
         link.source = _source_of(timeline, link.factor)
-        link.confounder = find_confounder(timeline, link)
+        # Третий фактор ищем только у связей, которые сами претендуют на вывод.
+        # Иначе на пустышке выходит выдумка поверх шума: связи нет вовсе, а
+        # человеку говорят «дело в другом факторе» - будто связь была.
+        claims = (link.p_adjusted <= 0.05
+                  and min(link.days_with, link.days_without) >= min_days)
+        link.confounder = find_confounder(timeline, link) if claims else ""
         link.implied_without = implied_here(timeline, link.factor)
 
     return sorted(best.values(), key=lambda l: (l.p_adjusted, -abs(l.effect)))
@@ -183,23 +199,32 @@ def find_confounder(timeline: Timeline, link: Link) -> str:
     for other in sorted(timeline.factor_names()):
         if other == link.factor:
             continue
-        effects = []
+        weighted: list[tuple[float, int]] = []
         for group_value in (1.0, 0.0):
-            effect = _effect_within(timeline, link, other, group_value)
-            if effect is None:
-                effects = []
-                break
-            effects.append(effect)
-        if not effects:
+            found = _effect_within(timeline, link, other, group_value)
+            if found is not None:
+                weighted.append(found)
+        if not weighted:
             continue
-        # Внутри обеих частей эффект должен сохраниться хотя бы наполовину
-        if max(abs(e) for e in effects) < abs(link.effect) * 0.5:
+        # Раньше требовались обе части сразу, и самый частый случай проходил
+        # мимо: когда третий фактор сильный, дней «с привычкой и без него»
+        # почти не остаётся - четырёх не набирается, и проверка молча
+        # отключалась. Теперь считаем по тем частям, где дней хватило, и
+        # взвешиваем их по числу дней: часть из тридцати дней весит больше,
+        # чем часть из шести.
+        total = sum(days for _, days in weighted)
+        inside = sum(abs(effect) * days for effect, days in weighted) / total
+        if inside < abs(link.effect) * 0.5:
             return other
     return ""
 
 
-def _effect_within(timeline: Timeline, link: Link, other: str, group_value: float) -> float | None:
-    """Разница средних по фактору link.factor только среди дней, где other == group_value."""
+def _effect_within(timeline: Timeline, link: Link, other: str,
+                   group_value: float) -> tuple[float, int] | None:
+    """
+    Разница средних по фактору link.factor только среди дней, где
+    other == group_value, и сколько дней в этой части. None - дней мало.
+    """
     factor_series = timeline.series("factor", link.factor)
     other_series = timeline.series("factor", other)
     metric_series = timeline.series("metric", link.metric)
@@ -214,9 +239,10 @@ def _effect_within(timeline: Timeline, link: Link, other: str, group_value: floa
             continue
         (with_factor if value > 0 else without_factor).append(outcome)
 
-    if len(with_factor) < 4 or len(without_factor) < 4:
+    if len(with_factor) < WITHIN_MIN_DAYS or len(without_factor) < WITHIN_MIN_DAYS:
         return None       # слишком мало дней, чтобы судить
-    return mean(with_factor) - mean(without_factor)
+    return (mean(with_factor) - mean(without_factor),
+            len(with_factor) + len(without_factor))
 
 
 def _source_of(timeline: Timeline, factor: str) -> str:

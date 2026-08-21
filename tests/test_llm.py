@@ -6,7 +6,9 @@
 весь запас токенов. Человек в обоих случаях видел «не понял, что записать» и
 думал, что программа не умеет разбирать речь.
 """
+import io
 import json
+import urllib.request
 
 import pytest
 
@@ -57,3 +59,71 @@ def test_no_key_is_an_honest_error(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     with pytest.raises(RuntimeError):
         llm.claude_complete()
+
+
+def test_no_money_is_not_a_reason_to_ask_twice(monkeypatch):
+    """
+    Ответ 400 «кончились деньги» - не то же самое, что «модель не знает поля».
+
+    Пока эти два случая были одним, разбор речи на пустом ключе молча уходил
+    на словарь: два запроса подряд, оба отказ, и человек видел «не понял, что
+    записать» вместо честного «модель недоступна».
+    """
+    import urllib.error
+
+    calls = []
+
+    def refuse(request, timeout=None, context=None):
+        calls.append(request)
+        raise urllib.error.HTTPError(
+            "https://api.anthropic.com/v1/messages", 400, "Bad Request", {},
+            io.BytesIO(json.dumps({"error": {"message":
+                "Your credit balance is too low to access the Anthropic API."}
+            }).encode()))
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ключ-для-теста")
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
+
+    with pytest.raises(RuntimeError, match="credit balance"):
+        llm.claude_complete()("разбери это")
+    assert len(calls) == 1          # второй раз не спрашиваем
+
+
+def test_unknown_field_is_asked_again(monkeypatch):
+    """А вот незнакомое поле - как раз повод спросить второй раз, без него."""
+    import urllib.error
+
+    answers = []
+
+    def maybe(request, timeout=None, context=None):
+        answers.append(json.loads(request.data))
+        if "thinking" in answers[-1]:
+            raise urllib.error.HTTPError(
+                "https://api.anthropic.com/v1/messages", 400, "Bad Request", {},
+                io.BytesIO(json.dumps({"error": {"message":
+                    "unexpected field: thinking"}}).encode()))
+        return _Response(json.dumps(
+            {"content": [{"type": "text", "text": "готово"}]}).encode())
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "ключ-для-теста")
+    monkeypatch.setattr(urllib.request, "urlopen", maybe)
+
+    assert llm.claude_complete()("разбери это") == "готово"
+    assert len(answers) == 2
+    assert "thinking" not in answers[1]
+
+
+class _Response:
+    """Минимальный ответ сети: подходит для `with urlopen(...) as response`."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_) -> bool:
+        return False

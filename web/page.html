@@ -201,6 +201,7 @@
  .engine{padding:0 2px 4px;font-size:13px;line-height:1.5;color:var(--dim)}
  .engine p{margin:0}
  .engine b{font-weight:500;color:var(--soft)}
+ .engine #model-error{margin-top:4px;color:#8a5b2f}
  .engine summary{margin-top:5px;color:var(--soft);cursor:pointer}
  .engine details p{margin-top:6px}
 
@@ -404,6 +405,7 @@
 
     <div class="engine" data-panel="insights">
       <p>Речь разбирает <b>__ENGINE__</b>.</p>
+      <p id="model-error" hidden></p>
       <details>
         <summary>Как устроен разбор речи</summary>
         <p>Модель понимает живую речь целиком, разбор по правилам знает только частые слова,
@@ -897,6 +899,16 @@ async function poll(){
       document.getElementById('weather-from').textContent =
         'Сегодняшнюю погоду берём в ' + state.weather_source
         + ', историю прошлых дней - в open-meteo.com.';
+    }
+    // Модель отвалилась - говорим прямо. Молча перейти на словарь значит
+    // оставить человека гадать, почему разбор вдруг стал хуже.
+    const modelError = document.getElementById('model-error');
+    if(state.model_error){
+      modelError.textContent = 'Сейчас разбираю по словарю: модель не ответила ('
+        + state.model_error + ').';
+      modelError.hidden = false;
+    } else {
+      modelError.hidden = true;
     }
     draw(state);
   } catch(e) { /* сервер выключили - следующая попытка через две секунды */ }

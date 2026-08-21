@@ -1,4 +1,5 @@
 """Движок связей: находит настоящее и молчит про случайное."""
+import random
 from demo.generate import build
 from conftest import FAST_PERMUTATIONS
 from wam.insights import (MIN_DAYS_PER_GROUP, OBSERVATION_MIN_DAYS, find_links,
@@ -62,3 +63,53 @@ def test_lower_threshold_sees_what_the_usual_one_misses():
 
 def test_summary_counts_days():
     assert summarise(build(days=30))["дней в дневнике"] == 30
+
+
+def test_confounder_found_when_third_factor_is_strong():
+    """
+    Аврал заставляет пить кофе и сам портит сон. Программа обязана сказать,
+    что дело не в кофе.
+
+    Проверка внутри слоёв раньше требовала по четыре дня в каждой части - и
+    при сильном третьем факторе отключалась молча: дней «с кофе, но без
+    аврала» столько не набиралось. Именно этот случай и есть самый частый.
+    """
+    rng = random.Random(4)
+    line = Timeline()
+    start = date(2026, 3, 1)
+    for offset in range(70):
+        record = DayRecord(day=start + timedelta(days=offset))
+        rush = rng.random() < 0.45
+        record.add(Fact("factor", "аврал", 1.0 if rush else 0.0, "diary"))
+        drank = rng.random() < (0.85 if rush else 0.2)
+        record.add(Fact("factor", "кофе", 1.0 if drank else 0.0, "diary"))
+        sleep = 7.0 + rng.gauss(0, 0.7) - (2.2 if rush else 0.0)
+        record.add(Fact("metric", "качество сна", max(0.0, min(10.0, sleep)), "diary"))
+        line.add(record)
+
+    links = find_links(line, permutations=FAST_PERMUTATIONS)
+    coffee = [l for l in links if l.factor == "кофе" and l.metric == "качество сна"]
+    assert coffee, "связь «кофе - сон» в данных есть, её надо хотя бы увидеть"
+    assert all(l.strength != "подтверждено" for l in coffee)
+    assert any(l.confounder == "аврал" for l in coffee)
+
+
+def test_choosing_the_best_lag_is_paid_for():
+    """
+    У каждой пары проверяются три задержки, и берётся самая выраженная. Это
+    само по себе завышает эффект, поэтому поправка на множественные сравнения
+    обязана считать все три, а не только пары.
+    """
+    rng = random.Random(9)
+    line = Timeline()
+    start = date(2026, 4, 1)
+    for offset in range(50):
+        record = DayRecord(day=start + timedelta(days=offset))
+        record.add(Fact("factor", "кофе", 1.0 if rng.random() < 0.5 else 0.0, "diary"))
+        record.add(Fact("metric", "энергия", round(rng.uniform(3, 8), 1), "diary"))
+        line.add(record)
+
+    links = find_links(line, permutations=FAST_PERMUTATIONS)
+    for link in links:
+        # Округление до тысячных делает своё дело, поэтому сравниваем с ним же
+        assert link.p_adjusted >= round(min(1.0, link.p_value * 3), 4) - 1e-9
