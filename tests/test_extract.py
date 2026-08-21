@@ -1,7 +1,8 @@
 """Разбор рассказа: факты должны сводиться к общим именам."""
 from datetime import date
 
-from wam.extract import RuleExtractor, LLMExtractor
+from wam.extract import (LLMExtractor, RuleExtractor, day_mentioned,
+                         measured_number)
 
 
 def test_finds_factor_and_metric():
@@ -64,6 +65,50 @@ def test_model_metrics_are_limited_to_known_names():
     assert record.factor("ссора с руководителем") == 1.0
 
 
+def test_measure_next_to_the_number_is_recognised():
+    """«5 часов», «8 встреч», «две чашки» - это счёт чего-то, а не оценка по шкале."""
+    assert measured_number("спал 5 часов")
+    assert measured_number("сегодня 8 встреч")
+    assert measured_number("выпил две чашки кофе")
+    assert measured_number("пробежал 5 км")
+
+
+def test_ordinary_word_after_the_number_is_not_a_measure():
+    """
+    Человек мнётся: «8 вроде», «на 6 где-то». По чёрному списку слов мерой
+    становилось любое такое слово, и честная оценка пропадала молча.
+    """
+    assert not measured_number("8 вроде")
+    assert not measured_number("на 7 кажется")
+    assert not measured_number("на 6 где-то")
+    assert not measured_number("9 точно")
+    assert not measured_number("тревога 8 сегодня")
+    assert not measured_number("8 из 10")
+
+
+def test_measure_after_the_score_does_not_hide_it():
+    """«на 8, бегал 5 км» - оценка названа первой, километры дальше про своё."""
+    assert not measured_number("на 8, бегал 5 км")
+
+
+def test_measure_before_the_number_counts_too():
+    """
+    «спал часов пять» - число стоит после меры, а не до неё. Пока смотрели
+    только слово справа, такая фраза в ответ на вопрос со шкалой становилась
+    оценкой: «тревога 5».
+    """
+    assert measured_number("спал часов пять")
+    assert measured_number("часов шесть где-то")
+    assert not measured_number("на 7")      # «на» мерой не было и не станет
+
+
+def test_habits_are_counted_things_too():
+    """«выпил 2 кофе», «2 пива вечером» - это счёт привычки, а не оценка."""
+    assert measured_number("выпил 2 кофе")
+    assert measured_number("2 пива вечером")
+    assert measured_number("3 тренировки на неделе")
+
+
 def test_model_zeros_for_unmentioned_metrics_are_dropped():
     """Модель любит дописать нули по всем показателям сразу - это не данные."""
     def fake(_prompt):
@@ -71,3 +116,67 @@ def test_model_zeros_for_unmentioned_metrics_are_dropped():
 
     record = LLMExtractor(fake).extract("сходил на пробежку", date(2026, 8, 1))
     assert record.facts == []
+
+
+# ── еда словами ───────────────────────────────────────────────────────────
+
+def test_food_becomes_a_factor_like_everything_else():
+    """«Что ел» - такой же фактор дня, как кофе или тренировка."""
+    record = RuleExtractor().extract("ел много мяса и фастфуд", date(2026, 8, 1))
+    assert record.factor("мясо") == 1.0
+    assert record.factor("фастфуд") == 1.0
+
+
+def test_food_words_collapse_to_common_names():
+    for said, name in [("взял бургер на обед", "фастфуд"),
+                       ("пицца вечером", "фастфуд"),
+                       ("на ужин был лосось", "рыба"),
+                       ("салат и брокколи", "овощи"),
+                       ("булочка с кофе", "выпечка"),
+                       ("творог утром", "молочное"),
+                       ("наелся на ночь", "поздний ужин"),
+                       ("объелся за ужином", "переедание"),
+                       ("сегодня не обедал", "пропустил обед")]:
+        record = RuleExtractor().extract(said, date(2026, 8, 1))
+        assert record.factor(name) == 1.0, said
+
+
+def test_sharp_pain_is_not_sharp_food():
+    """«Острая боль» - это про голову, а не про еду; словарь их путать не должен."""
+    record = RuleExtractor().extract("острая головная боль весь день", date(2026, 8, 1))
+    assert record.factor("острое") is None
+    assert RuleExtractor().extract("острая еда на обед", date(2026, 8, 1)).factor("острое") == 1.0
+
+
+def test_food_can_be_absent_too():
+    record = RuleExtractor().extract("сегодня не ел мяса совсем", date(2026, 8, 1))
+    assert record.factor("мясо") == 0.0
+
+
+# ── про какой день рассказывают ───────────────────────────────────────────
+
+def test_yesterday_and_the_day_before():
+    today = date(2026, 8, 20)               # четверг
+    assert day_mentioned("вчера пил вино", today) == date(2026, 8, 19)
+    assert day_mentioned("позавчера был перелёт", today) == date(2026, 8, 18)
+
+
+def test_weekday_points_to_the_last_such_day():
+    today = date(2026, 8, 20)               # четверг
+    assert day_mentioned("в среду ходил в зал", today) == date(2026, 8, 19)
+    assert day_mentioned("в понедельник был аврал", today) == date(2026, 8, 17)
+
+
+def test_today_and_its_own_weekday_are_not_a_past_day():
+    today = date(2026, 8, 20)               # четверг
+    assert day_mentioned("сегодня пил кофе", today) is None
+    assert day_mentioned("в четверг пил кофе", today) is None
+
+
+def test_a_day_deep_inside_the_phrase_is_not_its_topic():
+    """
+    «на 7, но это скорее из-за того что вчера лёг рано» - оценка за сегодня.
+    Увести такую реплику во вчерашний день значит потерять и оценку, и день.
+    """
+    today = date(2026, 8, 20)
+    assert day_mentioned("на 7, но это скорее из-за того что вчера лёг рано", today) is None

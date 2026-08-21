@@ -2,197 +2,461 @@
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Мира - дневник, который ищет причины</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet"
+ href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Literata:opsz,wght@7..72,400;7..72,500&display=swap">
 <style>
- :root{--ink:#1A1A1A;--text:#4B4F52;--soft:#8A8F93;--line:#E6E8E9;--green:#1F8A5B;
-  --bg:#fff;--sheet:#FAFBFB;--warm:#FBF6E7}
+ /* Шрифты подгружаются из сети, поэтому у каждого объявления есть запасной
+    стек: без интернета страница должна выглядеть так же, только другим шрифтом. */
+ :root{--ink:#1d2024;--text:#4a5058;--soft:#6a7079;--dim:#82888f;--off:#8d939b;
+  --line:#c9ced6;--rule:#d8dce2;--hair:#eef0f3;--accent:#3d4f7c;--accent-dark:#2b3a5e;
+  --bg:#fff;--sheet:#eceef1;--head:#f6f7f9;--bubble:#f2f4f6;--bubble-line:#e0e4e9;
+  --sans:"Golos Text","Helvetica Neue",Helvetica,Arial,sans-serif;
+  --serif:Literata,Georgia,"Times New Roman",serif}
  *{box-sizing:border-box}
  html,body{height:100%}
  body{margin:0;display:flex;flex-direction:column;background:var(--sheet);color:var(--ink);
-  font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+  font:15px/1.55 var(--sans)}
 
- .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;
-  padding:16px 24px;background:var(--bg);border-bottom:1px solid var(--line)}
- .brand{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:800;
-  letter-spacing:.16em;text-transform:uppercase}
- .brand i{width:8px;height:8px;border-radius:50%;background:var(--green)}
+ /* Скрипт прячет блоки через свойство hidden, а у панелей и полос свой display -
+    без !important правило вида display:flex перебило бы hidden и блок остался бы виден. */
+ [hidden]{display:none!important}
+ :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+ .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:20px 24px 0}
+ .brand{font-size:21px;font-weight:600;letter-spacing:-.01em}
  .tagline{color:var(--soft);font-size:14px}
- .banner{background:var(--warm);border-bottom:1px solid #EFE3BE;color:#6B5A22;
-  font-size:13.5px;padding:9px 24px;text-align:center}
 
- .grid{flex:1;min-height:0;width:100%;max-width:1180px;margin:0 auto;
-  display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:18px;padding:18px 24px 24px}
+ .grid{flex:1;min-height:0;width:100%;max-width:1280px;margin:0 auto;
+  display:grid;grid-template-columns:minmax(0,1fr) 396px;gap:18px;padding:18px 24px 24px}
+
+ /* Шапка одна и та же у окна разговора и у блоков справа. */
+ .head{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:12px 16px;background:var(--head);border-bottom:1px solid var(--rule)}
+ .head h2{margin:0;font-size:15px;font-weight:600}
+ .who{display:flex;align-items:center;gap:9px;font-weight:600}
+ .who i{width:8px;height:8px;border-radius:50%;background:var(--accent)}
+ .when{font-size:13px;color:var(--dim)}
 
  /* без min-height:0 колонка растягивается по содержимому и лента с overflow схлопывается */
  .chat{display:flex;flex-direction:column;min-height:0;
-  background:var(--bg);border:1px solid var(--line);border-radius:14px;overflow:hidden}
- .feed{flex:1;overflow-y:auto;padding:18px;display:flex;flex-direction:column;gap:12px}
- .msg{max-width:88%;padding:11px 14px;border-radius:14px;font-size:15px;line-height:1.45;
-  white-space:pre-line}
- .msg.me{align-self:flex-end;background:var(--green);color:#fff}
- .msg.bot{background:#F4F6F7}
- .msg.ask{background:var(--warm);border-left:3px solid #D9B84C}
- .msg.result{background:#F1F8F4;border-left:3px solid var(--green)}
- .msg small{display:block;margin-top:6px;color:var(--soft);font-size:13px}
- .msg.me small{color:rgba(255,255,255,.75)}
- .msg .where{display:block;margin-bottom:5px;font-size:12px;letter-spacing:.04em;
-  text-transform:uppercase;color:var(--soft)}
+  background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+ .feed{flex:1;overflow-y:auto;padding:20px 18px;display:flex;flex-direction:column;gap:14px}
+ .msg{max-width:78%;padding:12px 15px;font-size:15px;line-height:1.5;white-space:pre-line;
+  background:var(--bubble);border:1px solid var(--bubble-line);border-radius:12px 12px 12px 3px}
+ .msg.me{align-self:flex-end;max-width:74%;background:var(--accent);border-color:var(--accent);
+  color:#fff;border-radius:12px 12px 3px 12px}
+ .msg.ask{background:var(--bg);border-color:var(--accent)}
+ /* Вопрос Миры подписан в стилях: лента строится из сообщений сервера, лишнего
+    поля в них нет, а отличать вопрос от ответа человеку надо. */
+ .msg.ask::before{content:'Мира спрашивает';display:block;margin-bottom:5px;
+  font-size:12.5px;font-weight:500;color:var(--accent)}
+ .msg.result{font-family:var(--serif);font-size:15.5px}
+ .msg small{display:block;margin-top:6px;font-family:var(--sans);color:var(--soft);font-size:13px}
+ .msg.me small{color:rgba(255,255,255,.78)}
+ .msg .where{display:block;margin-bottom:5px;font-size:12.5px;font-weight:500;color:var(--dim)}
  .msg.me .where{color:rgba(255,255,255,.8)}
- .bar{display:flex;gap:10px;padding:14px 18px;border-top:1px solid var(--line);background:var(--sheet)}
- .bar input{flex:1;min-width:0;padding:12px 14px;font:inherit;border:1px solid var(--line);border-radius:10px}
- .micnote{margin:0;padding:0 18px 12px;font-size:13.5px;color:var(--soft);background:var(--sheet)}
 
- button{font:inherit;font-weight:600;background:var(--green);color:#fff;border:0;
-  border-radius:10px;padding:11px 18px;cursor:pointer}
- button.ghost{background:var(--bg);color:var(--green);border:1px solid var(--green)}
+ .bar{display:flex;align-items:center;gap:10px;padding:13px 16px;
+  border-top:1px solid var(--rule);background:var(--head)}
+ .bar input{flex:1;min-width:0;padding:11px 14px;font:inherit;color:var(--ink);
+  background:var(--bg);border:1px solid var(--line);border-radius:8px}
+ .bar input::placeholder{color:#9aa0a8}
+ .micnote{margin:0;padding:0 16px 12px;font-size:13px;color:var(--soft);background:var(--head)}
+
+ button{font:inherit;font-weight:500;background:var(--accent);color:#fff;
+  border:1px solid var(--accent);border-radius:8px;padding:11px 20px;cursor:pointer}
+ button:not(:disabled):hover{background:var(--accent-dark);border-color:var(--accent-dark)}
+ button.ghost{background:var(--bg);color:var(--ink);border-color:var(--line)}
+ button.ghost:not(:disabled):hover{background:var(--head);border-color:#aeb5bf}
  button:disabled{opacity:.5;cursor:default}
- button.small{padding:8px 12px;font-size:14px}
+ button.small{padding:9px 13px;font-size:13.5px}
+ button.icon{flex:none;display:flex;align-items:center;justify-content:center;
+  width:42px;height:42px;padding:0;background:var(--bg);color:var(--ink);border-color:var(--line)}
+ button.icon:not(:disabled):hover{background:var(--head);border-color:#aeb5bf}
+ /* Два значка внутри кнопки: скрипт переключает класс, а не текст, иначе
+    textContent затёр бы svg и микрофон превратился бы в пустой квадрат. */
+ #mic .stop{display:none}
+ #mic.on{border-color:var(--accent)}
+ #mic.on .rec{display:none}
+ #mic.on .stop{display:block}
+ #send .arrow{display:none}
 
  .panel{min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:14px}
- .block{background:var(--bg);border:1px solid var(--line);border-radius:14px;padding:16px}
- .block h2{margin:0 0 10px;font-size:12.5px;font-weight:700;letter-spacing:.13em;
-  text-transform:uppercase;color:var(--green)}
- .hint{font-size:13.5px;color:var(--soft);margin:8px 0 0}
- .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+ /* Колонка прокручивается целиком, поэтому блокам нельзя ужиматься по высоте:
+    иначе последние строки списка и кнопки обрезаются на невысоком экране. */
+ .panel>*{flex:none}
+ .block{background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+ .body{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+ .hint{margin:0;font-size:13px;line-height:1.5;color:var(--soft)}
+ .row{display:flex;gap:8px;flex-wrap:wrap}
  .panel input[type=text],.panel input[type=password]{width:100%;padding:10px 12px;font:inherit;
-  border:1px solid var(--line);border-radius:10px}
- .ok{margin:0 0 8px;font-size:14px}
- .ok b{color:var(--green)}
- .warn{margin:10px 0 0;padding:9px 11px;background:var(--warm);border-radius:8px;
-  font-size:13.5px;color:#6B5A22}
- .code{margin:8px 0;padding:12px;text-align:center;border:1px dashed var(--green);
-  border-radius:10px;font-size:23px;font-weight:800;letter-spacing:.06em;color:var(--green)}
+  color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px}
+ .ok{margin:0;font-size:14px}
+ .ok b{font-weight:500}
+ /* Сдержанный тон: жёлтая плашка кричала громче самой ошибки. */
+ .warn{margin:0;padding:9px 11px;background:#faf3f3;border:1px solid #ecdada;
+  border-radius:8px;font-size:13px;color:#8a3d3d}
+ .code{margin:0;padding:12px;text-align:center;border:1px dashed var(--accent);border-radius:8px;
+  font-size:21px;font-weight:600;letter-spacing:.05em;color:var(--accent)}
+ .stack{display:flex;flex-direction:column;gap:10px}
 
- .card{display:flex;align-items:baseline;gap:9px;padding:7px 0;border-top:1px solid var(--line);
-  font-size:14px;color:var(--soft)}
- .card:first-child{border-top:0}
+ .card{display:flex;align-items:baseline;gap:9px;padding:8px 0;font-size:14px;
+  color:var(--off);border-bottom:1px solid var(--hair)}
+ /* Точку держим у первой строки: на узком экране название с пояснением
+    переносится, и точка по центру блока оказывалась напротив пустого места. */
+ .card::before{content:'';flex:none;align-self:flex-start;margin-top:7px;width:7px;height:7px;
+  border-radius:50%;border:1px solid #b9bfc7}
  .card.on{color:var(--ink)}
- .card b{font-weight:600}
+ .card.on::before{background:var(--accent);border-color:var(--accent)}
+ .card:last-child{border-bottom:0}
+ .card b{flex:none;font-weight:500}
  .card em{font-style:normal;font-size:13px;color:var(--soft)}
- .ringrow label{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text);
-  margin-bottom:7px}
- .ringrow input{flex:1;min-width:0}
- .ringrow span{font-weight:700;min-width:44px;text-align:right}
- select{width:100%;font:inherit;padding:10px 12px;border:1px solid var(--line);
-  border-radius:10px;background:var(--bg)}
+ .card.chat{justify-content:space-between;color:var(--ink);gap:10px}
+ .card.chat::before{display:none}
 
- @media (max-width:900px){
-  html,body{height:auto}
-  .grid{grid-template-columns:1fr;padding:14px}
-  .chat{min-height:68vh}
-  .panel{overflow:visible}
+ /* Список источников рисует скрипт, а ползунки кольца должны стоять сразу под
+    подключённым источником. display:contents отдаёт строки списка общей колонке,
+    и порядок расставляется стилями - разметку скрипта трогать не приходится. */
+ .sources{display:flex;flex-direction:column;padding:2px 16px 12px}
+ #sources{display:contents}
+ /* Порядок колонки: источник, сразу под ним его настройка, и так далее.
+    Неподключённые уходят вниз - правила ниже перебивают это для тех, у кого
+    настройка своя. */
+ .card:not(.on){order:8}
+ .ring{order:1;display:flex;flex-direction:column;gap:8px;padding:12px 0}
+ .ring label{display:flex;align-items:center;gap:10px;font-size:14px;color:var(--text)}
+ .ring input[type=range]{flex:1;min-width:0;accent-color:var(--accent)}
+ .ring span{min-width:46px;text-align:right;font-weight:500;font-variant-numeric:tabular-nums}
+ /* Числа КБЖУ вводятся руками, как двигаются ползунки кольца: в продукте они
+    придут из приложения, здесь - из полей и выгрузки. */
+ /* Класс блока не должен совпадать с классом строки источника: у строки свой
+    display:flex в ряд, и общее имя разворачивало её в колонку. */
+ .card.food{order:2}
+ .kbju{order:3;display:flex;flex-direction:column;gap:8px;padding:12px 0}
+ .kbju .row{align-items:center;gap:8px}
+ /* Подпись рядом с полем, как у ползунков кольца: в подсказку внутри поля
+    слово «Углеводы, г» не влезает и обрезается на середине. */
+ .kbju .fields{display:grid;grid-template-columns:1fr 1fr;gap:8px 10px}
+ .kbju label{display:flex;align-items:center;gap:8px;font-size:13.5px;color:var(--text)}
+ .kbju input[type=number]{flex:1;min-width:0;width:100%;padding:9px 10px;font:inherit;
+  font-size:13.5px;color:var(--ink);background:var(--bg);
+  border:1px solid var(--line);border-radius:8px}
+ .kbju textarea{width:100%;box-sizing:border-box;margin-top:8px;padding:9px 11px;
+  font:inherit;font-size:13px;color:var(--ink);background:var(--bg);
+  border:1px solid var(--line);border-radius:8px;resize:vertical}
+ .kbju details{font-size:13px}
+ .kbju summary{color:var(--soft);cursor:pointer}
+ .kbju code{font-size:12.5px;color:var(--ink)}
+ /* Поле города встаёт под своей строкой источника. Строка погоды держит своё
+    место и когда город уже назван: иначе она уезжает к подключённым наверх, а
+    поле остаётся внизу - и человек не понимает, к чему оно относится. */
+ .card.weather{order:4}
+ .city{order:5;display:flex;flex-direction:column;gap:8px;padding:12px 0}
+ .city .row{display:flex;align-items:center;gap:10px}
+ .city .row input[type=text]{flex:1;min-width:0}
+
+ select{font:inherit;font-size:13px;color:var(--soft);padding:5px 9px;max-width:210px;
+  background:var(--bg);border:1px solid var(--line);border-radius:6px}
+
+ .engine{padding:0 2px 4px;font-size:13px;line-height:1.5;color:var(--dim)}
+ .engine p{margin:0}
+ .engine b{font-weight:500;color:var(--soft)}
+ .engine summary{margin-top:5px;color:var(--soft);cursor:pointer}
+ .engine details p{margin-top:6px}
+
+ .tabs{display:none}
+
+ /* Телефон: разговор занимает экран, панели переключаются полосой внизу. */
+ @media (max-width:860px){
+  .top{padding:12px 16px;background:var(--bg);border-bottom:1px solid var(--rule)}
+  .brand{font-size:18px}
+  .tagline{font-size:12.5px}
+  .grid{grid-template-columns:1fr;gap:0;padding:0;max-width:none}
+  .chat{border:0;border-radius:0}
+  .feed{padding:16px 14px;gap:12px}
+  .msg{max-width:86%;font-size:14.5px}
+  .msg.me{max-width:82%}
+  /* Слово «Отправить» съедало половину строки ввода, поэтому на телефоне
+     кнопки круглые и со значками - как в макете. */
+  .bar{gap:8px;padding:10px 12px}
+  .bar input{padding:13px 14px;border-radius:22px;font-size:14.5px}
+  button.icon,#send{width:46px;height:46px;padding:0;border-radius:50%;flex:none;
+   display:flex;align-items:center;justify-content:center}
+  #send span{display:none}
+  #send .arrow{display:block}
+  .panel{padding:14px}
+  .tabs{display:flex;background:var(--bg);border-top:1px solid var(--rule)}
+  .tabs button{flex:1;padding:14px 8px;background:none;color:var(--soft);border:0;
+   border-bottom:2px solid transparent;border-radius:0;font-size:13.5px;font-weight:400}
+  .tabs button:not(:disabled):hover{background:var(--head)}
+  .tabs button.on{color:var(--accent);font-weight:500;border-bottom-color:var(--accent)}
+  /* Невыбранное прячем, но из разметки не убираем: опрос состояния продолжает
+     писать и в скрытые панели, иначе после переключения там была бы пустота. */
+  body[data-tab=chat] .panel{display:none}
+  body:not([data-tab=chat]) .chat{display:none}
+  body[data-tab=insights] .panel>:not([data-panel=insights]),
+  body[data-tab=sources] .panel>:not([data-panel=sources]),
+  body[data-tab=telegram] .panel>:not([data-panel=telegram]){display:none}
  }
 </style></head><body>
 
 <header class="top">
-  <div class="brand"><i></i>Мира</div>
+  <div class="brand">Мира</div>
   <div class="tagline">дневник, который ищет причины</div>
 </header>
-<div class="banner">Это прототип для заявки. Дневник за выбранный срок придуман для показа:
- связи в нём заложены заранее, чтобы было видно, что программа находит настоящее и отсеивает случайное.</div>
 
 <main class="grid">
   <section class="chat">
+    <div class="head">
+      <div class="who"><i></i>Разговор с Мирой</div>
+      <div class="when" id="today"></div>
+    </div>
     <div class="feed" id="feed"></div>
     <div class="bar">
-      <input id="text" placeholder="Например: пил кофе часов в пять, спал часов пять"
+      <input id="text" placeholder="Расскажите, как прошёл день"
              onkeydown="if(event.key==='Enter')send()">
-      <button class="ghost" id="mic" onclick="listen()" title="Наговорить">🎤</button>
-      <button id="send" onclick="send()">Отправить</button>
+      <button class="icon" id="mic" onclick="listen()" aria-label="Наговорить" title="Наговорить">
+        <svg class="rec" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6"
+             height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0"></path><path d="M12 18v3"></path></svg>
+        <svg class="stop" width="16" height="16" viewBox="0 0 24 24" fill="currentColor"
+             aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"></rect></svg>
+      </button>
+      <!-- Имя кнопке нужно своё: на телефоне слово «Отправить» спрятано и
+           читалке остаётся только безымянный значок. -->
+      <button id="send" onclick="send()" aria-label="Отправить" title="Отправить"><span>Отправить</span>
+        <svg class="arrow" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path
+             d="M4 12h15"></path><path d="M13 6l6 6-6 6"></path></svg></button>
     </div>
     <p class="micnote" id="micnote"></p>
   </section>
 
   <aside class="panel">
-    <section class="block">
-      <h2>Telegram</h2>
-      <div id="tg-off">
-        <p class="hint" style="margin-top:0">Мира живёт в мессенджере. Подключите своего бота от
-          BotFather - и записи из чата будут видны здесь, в этой же ленте.</p>
-        <div class="row"><input id="tg-token" type="password" autocomplete="off"
-               placeholder="токен от BotFather"></div>
+    <section class="block" data-panel="insights">
+      <div class="head">
+        <h2>Выводы</h2>
+        <select id="days" aria-label="Срок дневника"></select>
+      </div>
+      <div class="body">
+        <p class="hint">Дневник за выбранный срок придуман для показа: связи в нём заложены заранее.</p>
         <div class="row">
-          <button class="small" onclick="connect(false)">Подключить</button>
-          <button class="small ghost" id="tg-env" hidden onclick="connect(true)">Взять токен из окружения</button>
+          <button class="small ghost" id="sum" onclick="summary()">Показать все выводы</button>
+          <button class="small ghost" onclick="reset()">Начать заново</button>
         </div>
-        <p class="hint">Токен остаётся только в памяти программы: ни в файл, ни в ответы сервера
-          он не попадает. После перезапуска введите его заново.</p>
+        <p class="hint" id="counting" hidden>Считаю выводы за выбранный срок - это несколько секунд.</p>
       </div>
+    </section>
 
-      <div id="tg-on" hidden>
-        <p class="ok">Бот на связи: <b id="tg-name"></b></p>
-        <div id="tg-code-box">
-          <p class="hint" style="margin-top:0">Напишите боту этот код - и чат со страницей будут
-            вести один дневник:</p>
-          <div class="code" id="tg-code"></div>
-          <p class="hint">Код срабатывает один раз и живёт четверть часа.</p>
-          <div class="row"><button class="small ghost" onclick="newCode()">Показать новый код</button></div>
+    <section class="block" data-panel="sources">
+      <div class="head"><h2>Источники</h2></div>
+      <div class="sources">
+        <div id="sources"></div>
+        <div class="ring">
+          <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
+          <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
+          <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
+          <p class="hint">Кольцо здесь передвигается руками - в продукте цифры приходят от устройства.</p>
         </div>
-        <p class="ok" id="tg-linked" hidden>Чат привязан. Всё, что вы пишете боту, появляется в ленте
-          слева с пометкой.</p>
-        <div class="row"><button class="small ghost" onclick="disconnect()">Отключить</button></div>
+        <div class="kbju">
+          <div class="fields">
+            <label>Калории <input id="kcal" type="number" min="0" step="10"></label>
+            <label>Белки, г <input id="protein" type="number" min="0" step="1"></label>
+            <label>Жиры, г <input id="fat" type="number" min="0" step="1"></label>
+            <label>Углеводы, г <input id="carbs" type="number" min="0" step="1"></label>
+          </div>
+          <div class="row">
+            <button class="small ghost" onclick="sendFood()">Записать за день</button>
+          </div>
+          <details>
+            <summary>Загрузить выгрузку из приложения</summary>
+            <p class="hint">Строка на день, пять колонок с такой шапкой:<br>
+              <code>дата,калории,белки,жиры,углеводы</code><br>
+              Дата - 2026-08-01 или 01.08.2026, разделитель - запятая или точка с запятой.</p>
+            <textarea id="food-csv" rows="4" placeholder="дата,калории,белки,жиры,углеводы
+2026-08-01,2900,70,95,410"></textarea>
+            <div class="row"><button class="small ghost" onclick="sendFood(true)">Загрузить</button></div>
+          </details>
+          <p class="hint" id="food-note">Из чисел получаются такие же факторы дня, как кофе
+            или прогулка: переел, недоел, мало белка, много углеводов. Пороги считаются от
+            обычной суточной нормы взрослого - это не советы по питанию, а способ сравнить
+            ваши дни между собой.</p>
+        </div>
+        <div class="city">
+          <div class="row">
+            <input id="city" type="text" autocomplete="off" placeholder="город, например Москва"
+                   onkeydown="if(event.key==='Enter') setCity()">
+            <button class="small ghost" onclick="setCity()">Сохранить</button>
+          </div>
+          <p class="hint" id="city-note">Назовите город - и давление, температура и облачность
+            станут такими же факторами дня, как кофе или тренировка. Не назовёте - погоды
+            в дневнике просто не будет.</p>
+        </div>
       </div>
-      <p class="warn" id="tg-error" hidden></p>
     </section>
 
-    <section class="block">
-      <h2>Источники</h2>
-      <div id="sources"></div>
+    <section class="block" data-panel="telegram">
+      <div class="head"><h2>Telegram</h2></div>
+      <div class="body">
+        <div id="tg-off" class="stack">
+          <p class="hint">Мира живёт в мессенджере. Подключите своего бота от
+            BotFather - и записи из чата будут видны здесь, в этой же ленте.</p>
+          <div class="row"><input id="tg-token" type="password" autocomplete="off"
+                 placeholder="токен от BotFather"></div>
+          <div class="row">
+            <button class="small" onclick="connect(false)">Подключить</button>
+            <button class="small ghost" id="tg-env" hidden onclick="connect(true)">Взять токен из окружения</button>
+          </div>
+          <p class="hint">Токен остаётся только в памяти программы: ни в файл, ни в ответы сервера
+            он не попадает. После перезапуска введите его заново.</p>
+        </div>
+
+        <div id="tg-on" class="stack" hidden>
+          <p class="ok">Бот на связи: <b id="tg-name"></b></p>
+          <div id="tg-code-box" class="stack">
+            <p class="hint">Напишите боту этот код - и чат со страницей будут вести один дневник:</p>
+            <div class="code" id="tg-code"></div>
+            <p class="hint" id="tg-code-note">Код срабатывает один раз и живёт четверть часа.</p>
+            <div class="row"><button class="small ghost" onclick="newCode()">Показать новый код</button></div>
+          </div>
+          <div id="tg-linked" class="stack" hidden>
+            <p class="ok">Чат привязан. Всё, что вы пишете боту, появляется в ленте слева с пометкой.</p>
+            <div id="tg-chats"></div>
+            <p class="hint">Отвязать - значит закрыть чату доступ к дневнику. Записи остаются здесь.</p>
+          <!-- Напоминание на странице бессмысленно: она либо открыта, либо закрыта.
+               Работают они в чате, и сказать об этом надо там, где человек его подключил. -->
+          <p class="hint">Вечером бот напомнит записать день - но только если за день от вас
+            ничего не было. Время меняется в чате командой «/напоминание 20:30», выключается
+            командой «/напоминание выкл».</p>
+          </div>
+          <div class="row"><button class="small ghost" onclick="disconnect()">Отключить</button></div>
+        </div>
+        <p class="warn" id="tg-error" hidden></p>
+      </div>
     </section>
 
-    <section class="block">
-      <h2>Что намеряло кольцо</h2>
-      <div class="ringrow">
-        <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
-        <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
-        <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
-      </div>
-      <p class="hint">Показания идут в дневник вместе с рассказом. Кольцо здесь передвигается
-        руками - в продукте цифры приходят от устройства.</p>
-    </section>
-
-    <section class="block">
-      <h2>Выводы</h2>
-      <select id="days">
-        <option value="21">дневник за 3 недели</option>
-        <option value="45">за 1,5 месяца</option>
-        <option value="90">за 3 месяца</option>
-        <option value="120" selected>за 4 месяца</option>
-        <option value="180">за полгода</option>
-      </select>
-      <div class="row">
-        <button class="small ghost" onclick="summary()">Показать все выводы</button>
-        <button class="small ghost" onclick="reset()">Начать заново</button>
-      </div>
-      <p class="hint">Речь разбирает <b>__ENGINE__</b>. Модель понимает живую речь целиком, разбор
-        по правилам знает только частые слова, зато работает без интернета и подстраховывает, когда
-        сервис недоступен. Свою модель можно подключить своим ключом, как - написано в README.</p>
-    </section>
+    <div class="engine" data-panel="insights">
+      <p>Речь разбирает <b>__ENGINE__</b>.</p>
+      <details>
+        <summary>Как устроен разбор речи</summary>
+        <p>Модель понимает живую речь целиком, разбор по правилам знает только частые слова,
+          зато работает без интернета и подстраховывает, когда сервис недоступен. Свою модель
+          можно подключить своим ключом, как - написано в README.</p>
+      </details>
+    </div>
   </aside>
 </main>
+
+<!-- На телефоне панели прячутся за эту полосу; на широком экране её не видно. -->
+<nav class="tabs" role="tablist" aria-label="Разделы">
+  <button role="tab" data-tab="chat" onclick="tab('chat')">Разговор</button>
+  <button role="tab" data-tab="insights" onclick="tab('insights')">Выводы</button>
+  <button role="tab" data-tab="sources" onclick="tab('sources')">Источники</button>
+  <button role="tab" data-tab="telegram" onclick="tab('telegram')">Telegram</button>
+</nav>
 
 <script>
 // Источники рисуются из одного списка одним шаблоном: когда появится общий
 // реестр источников, сюда встанет его список, а разметку менять не придётся.
 const SOURCES = [
   {name: 'Умное кольцо Sber', note: 'сон, стресс, шаги', ready: true},
+  {name: 'Еда', note: 'словами в рассказе и числами КБЖУ', ready: true, food: true},
+  {name: 'Погода и город', note: 'давление, температура, облачность', weather: true},
   {name: 'Apple Health', note: 'разбор написан, подключение в программе', ready: false},
   {name: 'Health Connect', note: 'для Android, тот же формат', ready: false},
-  {name: 'Календарь', note: 'встречи и перелёты как факторы', ready: false},
-  {name: 'Погода и город', note: 'давление, смена часового пояса', ready: false}
+  {name: 'Календарь', note: 'встречи и перелёты как факторы', ready: false}
 ];
+
+// Погода подключается городом, а не кнопкой: пока города нет, источник и
+// правда не работает, и показывать его подключённым было бы неправдой.
+let city = '';
 
 function drawSources(){
   const box = document.getElementById('sources');
   box.innerHTML = '';
   for(const source of SOURCES){
+    const on = source.weather ? !!city : source.ready;
     const card = document.createElement('div');
-    card.className = 'card' + (source.ready ? ' on' : '');
+    card.className = 'card' + (on ? ' on' : '')
+      + (source.weather ? ' weather' : '') + (source.food ? ' food' : '');
     const name = document.createElement('b');
     name.textContent = source.name;
     const note = document.createElement('em');
-    note.textContent = source.ready ? source.note : source.note + ' - пока не подключено';
+    note.textContent = on ? (source.weather ? source.note + ' - ' + city : source.note)
+                          : source.note + ' - пока не подключено';
     card.append(name, note);
     box.appendChild(card);
+  }
+}
+
+async function setCity(){
+  const note = document.getElementById('city-note');
+  try {
+    const answer = await talk('/city', {city: document.getElementById('city').value});
+    city = answer.city;
+    // Не подтвердился город - это ещё не значит, что он неправильный: могло
+    // не быть связи. Говорим ровно то, что знаем.
+    note.textContent = !city ? 'Города нет - погода в дневнике не участвует.'
+      : (answer.known ? 'Погода берётся для города «' + city + '».'
+                      : 'Город записан, но погоду по нему сейчас не достать: '
+                        + 'проверьте название или связь с интернетом.');
+    drawSources();
+  } catch(e) {
+    trouble('Город не сохранился: ' + e.message);
+  }
+}
+
+// Еда числами уходит отдельным запросом, а не вместе с репликой: КБЖУ человек
+// вводит раз в день, а рассказывает про день сколько угодно раз.
+async function sendFood(fromCsv){
+  const note = document.getElementById('food-note');
+  const table = document.getElementById('food-csv');
+  const fields = {kcal: 'калории', protein: 'белки', fat: 'жиры', carbs: 'углеводы'};
+  const body = {since: lastSeq};
+
+  if(fromCsv){
+    if(!table.value.trim()){ note.textContent = 'Вставьте выгрузку в поле выше.'; return; }
+    body.csv = table.value;
+  } else {
+    let filled = false;
+    for(const id in fields){
+      const value = document.getElementById(id).value.trim();
+      if(value === '') continue;
+      body[fields[id]] = +value;
+      filled = true;
+    }
+    if(!filled){ note.textContent = 'Впишите хотя бы калории.'; return; }
+  }
+
+  try {
+    const answer = await talk('/food', body);
+    if(!answer.ok){ note.textContent = answer.error; return; }
+    draw(answer);
+    note.textContent = 'Записал ' + answer.told
+      + '. Дальше эти факторы участвуют в поиске связей наравне с привычками.';
+    if(fromCsv) table.value = '';
+    else for(const id in fields) document.getElementById(id).value = '';
+    tab('chat');
+  } catch(e) {
+    note.textContent = 'Не записалось: ' + e.message;
+  }
+}
+
+// Сроки приходят с сервера одним списком: там же ими называется период в
+// выводах, поэтому «за полгода» в списке и в ответе - одни и те же слова.
+const PERIODS = __PERIODS__;
+const DEFAULT_DAYS = __DEFAULT_DAYS__;
+
+function drawPeriods(){
+  const box = document.getElementById('days');
+  for(const period of PERIODS){
+    const option = document.createElement('option');
+    option.value = period.days;
+    option.textContent = 'дневник за ' + period.name;
+    option.selected = period.days === DEFAULT_DAYS;
+    box.appendChild(option);
   }
 }
 
@@ -225,13 +489,36 @@ function show(message){
   feed.scrollTop = feed.scrollHeight;
 }
 
+// Одно и то же сообщение приходит дважды: в ответе на запрос и следом в опросе
+// состояния. Показываем только то, чего ещё не показывали.
 function draw(answer){
-  for(const message of (answer.messages || [])) show(message);
+  // Счёт сообщений живёт в памяти сервера, а lastSeq - во вкладке. После
+  // перезапуска программы дневник начинается заново, и наш прежний номер
+  // оказывается больше серверного: без сброса фильтр ниже съел бы всё, что
+  // сервер прислал, и человек не увидел бы даже ответа на своё сообщение.
+  if(answer.seq && answer.seq < lastSeq) lastSeq = 0;
+  for(const message of (answer.messages || [])){
+    if(message.seq && message.seq <= lastSeq) continue;
+    show(message);
+    if(message.seq) lastSeq = Math.max(lastSeq, message.seq);
+  }
   if(answer.seq) lastSeq = Math.max(lastSeq, answer.seq);
 }
 
 function trouble(text){
   show({kind: 'bot', text: text, from: 'page'});
+}
+
+// Все запросы к программе идут отсюда. Отказ сервера - это не тишина: раньше
+// на 400 или 403 сообщение просто пропадало из поля, и человек не понимал,
+// почему ничего не произошло.
+async function talk(path, body){
+  const options = body === undefined ? {} : {method:'POST', body: JSON.stringify(body)};
+  const r = await fetch(path, options);
+  let answer = {};
+  try { answer = await r.json(); } catch(e) { answer = {}; }
+  if(!r.ok) throw new Error(answer.error || 'программа ответила ошибкой ' + r.status);
+  return answer;
 }
 
 async function send(){
@@ -248,22 +535,41 @@ async function send(){
   };
   try {
     const days = +document.getElementById('days').value;
-    const r = await fetch('/say', {method:'POST', body: JSON.stringify({text, ring, days})});
-    draw(await r.json());
+    // since - что страница уже показала. Без него сообщение из чата, пришедшее
+    // между опросами состояния, терялось: ответ ставил lastSeq за него.
+    draw(await talk('/say', {text, ring, days, since: lastSeq}));
   } catch(e) {
-    trouble('Не получилось связаться с программой: ' + e.message);
+    trouble('Записать не получилось: ' + e.message);
+    if(!field.value) field.value = text;      // текст не теряем, его можно отправить снова
   }
   document.getElementById('send').disabled = false;
   field.focus();
 }
 
+// Выводы за полгода считаются несколько секунд. Без этой пометки страница
+// просто молчала, и было непонятно, нажалась кнопка или нет.
 async function summary(){
-  const r = await fetch('/summary?days=' + document.getElementById('days').value);
-  draw(await r.json());
+  const button = document.getElementById('sum');
+  const note = document.getElementById('counting');
+  button.disabled = true;
+  note.hidden = false;
+  try {
+    draw(await talk('/summary', {days: +document.getElementById('days').value,
+                                 since: lastSeq}));
+  } catch(e) {
+    trouble('Выводы не посчитались: ' + e.message);
+  }
+  button.disabled = false;
+  note.hidden = true;
 }
 
 async function reset(){
-  await fetch('/reset', {method:'POST'});
+  try {
+    await talk('/reset', {});
+  } catch(e) {
+    trouble('Начать заново не вышло: ' + e.message);
+    return;
+  }
   document.getElementById('feed').innerHTML = '';
   lastSeq = 0;
   hello();
@@ -288,7 +594,7 @@ function listen(){
   rec = new Rec(); rec.lang = 'ru-RU'; rec.interimResults = true; rec.continuous = true;
   let heard = '';
   rec.onstart = () => {
-    listening = true; mic.textContent = '⏹';
+    listening = true; micIcon(true);
     note.textContent = 'Слушаю. Говорите, потом нажмите стоп.';
   };
   rec.onresult = e => {
@@ -300,47 +606,101 @@ function listen(){
     document.getElementById('text').value = heard;
   };
   rec.onerror = e => {
-    listening = false; mic.textContent = '🎤';
+    listening = false; micIcon(false);
     const reasons = {'not-allowed':'Браузер не дал доступ к микрофону.','no-speech':'Не услышал речь, попробуйте ещё раз.',
       'audio-capture':'Микрофон не найден.','network':'Распознаванию нужен интернет.'};
     note.textContent = reasons[e.error] || ('Не получилось: ' + e.error);
   };
   rec.onend = () => {
     if(listening){ rec.start(); return; }
-    mic.textContent = '🎤'; note.textContent = '';
+    micIcon(false); note.textContent = '';
     if(heard) send();
   };
   rec.start();
 }
 
-// ── Telegram ──────────────────────────────────────────────────────────────
-async function ask(path, body){
-  const r = await fetch(path, {method:'POST', body: JSON.stringify(body || {})});
-  return await r.json();
+// Значок на кнопке меняется классом: внутри лежат оба svg, и запись текста в
+// кнопку - как было раньше - стёрла бы разметку значка вместе с ними.
+function micIcon(on){
+  const mic = document.getElementById('mic');
+  mic.classList.toggle('on', on);
+  const label = on ? 'Остановить запись' : 'Наговорить';
+  mic.setAttribute('aria-label', label);
+  mic.title = label;
 }
 
+// ── Telegram ──────────────────────────────────────────────────────────────
 async function connect(fromEnv){
   const field = document.getElementById('tg-token');
-  const answer = await ask('/telegram/connect',
-    fromEnv ? {from_env: true} : {token: field.value.trim()});
+  let answer;
+  try {
+    answer = await talk('/telegram/connect',
+      fromEnv ? {from_env: true} : {token: field.value.trim()});
+  } catch(e) {
+    answer = {ok: false, error: e.message};
+  }
   field.value = '';
-  if(!answer.ok){ trouble('Бот не подключился: ' + answer.error); }
+  if(!answer.ok) trouble('Бот не подключился: ' + answer.error);
   drawTelegram(answer.ok ? null : answer.error);
   poll();
 }
 
 async function disconnect(){
-  await ask('/telegram/disconnect');
-  poll();
+  await guard('/telegram/disconnect', {}, 'Отключить бота не вышло: ');
+}
+
+async function unlink(chat){
+  await guard('/telegram/unlink', chat === undefined ? {} : {chat: chat},
+              'Отвязать чат не вышло: ');
 }
 
 async function newCode(){
-  const answer = await ask('/telegram/code');
-  if(answer.code) document.getElementById('tg-code').textContent = answer.code;
+  try {
+    const answer = await talk('/telegram/code', {});
+    if(answer.code){
+      // Код мог быть спрятан (прежний устарел) - иначе он ложится в скрытый
+      // элемент и человек ждёт его до следующего опроса состояния.
+      const code = document.getElementById('tg-code');
+      code.textContent = answer.code;
+      code.hidden = false;
+      document.getElementById('tg-code-box').hidden = false;
+    }
+  } catch(e) {
+    drawTelegram('Новый код не получен: ' + e.message);
+    return;
+  }
+  poll();
 }
 
-let telegram = {connected: false, username: '', linked: false, code: '', error: '',
-                has_env_token: false};
+async function guard(path, body, prefix){
+  try {
+    await talk(path, body);
+  } catch(e) {
+    drawTelegram(prefix + e.message);
+    return;
+  }
+  poll();
+}
+
+let telegram = {connected: false, username: '', linked: false, chats: [], code: '',
+                code_stale: false, error: '', has_env_token: false};
+
+function drawChats(){
+  const box = document.getElementById('tg-chats');
+  box.innerHTML = '';
+  for(const chat of (telegram.chats || [])){
+    const row = document.createElement('div');
+    row.className = 'card chat';
+    const name = document.createElement('b');
+    name.textContent = 'чат ' + chat;
+    const button = document.createElement('button');
+    button.className = 'small ghost';
+    button.textContent = 'Отвязать';
+    button.onclick = () => unlink(chat);
+    row.append(name, button);
+    box.appendChild(row);
+  }
+}
 
 function drawTelegram(extra){
   document.getElementById('tg-off').hidden = telegram.connected;
@@ -348,8 +708,15 @@ function drawTelegram(extra){
   document.getElementById('tg-env').hidden = !telegram.has_env_token;
   document.getElementById('tg-name').textContent = telegram.username ? '@' + telegram.username : '';
   document.getElementById('tg-code').textContent = telegram.code;
-  document.getElementById('tg-code-box').hidden = telegram.linked || !telegram.code;
+  document.getElementById('tg-code').hidden = !telegram.code;
+  // Просроченный код не показываем совсем: диктовать его боту бесполезно.
+  document.getElementById('tg-code-note').textContent = telegram.code_stale
+    ? 'Прежний код устарел - нажмите «Показать новый код».'
+    : 'Код срабатывает один раз и живёт четверть часа.';
+  document.getElementById('tg-code-box').hidden =
+    telegram.linked || !(telegram.code || telegram.code_stale);
   document.getElementById('tg-linked').hidden = !telegram.linked;
+  drawChats();
 
   const problem = extra || telegram.error;
   const box = document.getElementById('tg-error');
@@ -363,14 +730,52 @@ async function poll(){
   if(document.hidden) return;
   try {
     const r = await fetch('/state?since=' + lastSeq);
+    // Отказ - не повод затирать панель: без этой проверки текст ошибки
+    // разбирался как состояние и панель Telegram гасла на пустом объекте.
+    if(!r.ok) return;
     const state = await r.json();
+    if(!state || !state.telegram) return;
     telegram = state.telegram;
     drawTelegram(null);
+    // Город живёт в программе, а не во вкладке: перезагрузили страницу -
+    // поле снова показывает то, что было выбрано.
+    if(typeof state.city === 'string' && state.city !== city){
+      city = state.city;
+      document.getElementById('city').value = city;
+      drawSources();
+    }
     draw(state);
   } catch(e) { /* сервер выключили - следующая попытка через две секунды */ }
 }
 
+// ── телефон ───────────────────────────────────────────────────────────────
+// Полоса вкладок видна только на узком экране: там панели не помещаются рядом
+// с разговором. Панели при этом остаются в разметке - опрос состояния пишет и
+// в скрытые, иначе после переключения человек увидел бы пустоту.
+function tab(name){
+  document.body.dataset.tab = name;
+  for(const button of document.querySelectorAll('.tabs button')){
+    const chosen = button.dataset.tab === name;
+    button.classList.toggle('on', chosen);
+    button.setAttribute('aria-selected', chosen ? 'true' : 'false');
+  }
+  // У скрытой ленты высота нулевая, и прокрутка вниз при показе сообщения не
+  // сработала: доматываем её здесь, когда лента снова на экране.
+  if(name === 'chat'){
+    const feed = document.getElementById('feed');
+    feed.scrollTop = feed.scrollHeight;
+  }
+}
+
+function today(){
+  const day = new Date().toLocaleDateString('ru-RU', {day: 'numeric', month: 'long'});
+  document.getElementById('today').textContent = 'сегодня, ' + day;
+}
+
 drawSources();
+drawPeriods();
+today();
+tab('chat');
 lbl();
 hello();
 poll();

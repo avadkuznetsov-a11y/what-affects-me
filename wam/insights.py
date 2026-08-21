@@ -29,6 +29,18 @@ MIN_DAYS_PER_GROUP = 7
 MAX_LAG_DAYS = 2
 PERMUTATIONS = 2000
 
+# Порог для слоя наблюдений: три дня с фактором и три без. Выводом такое
+# называть нельзя и мы не называем - `today.py` говорит про это прямым текстом.
+# Но молчать три недели тоже нельзя: смысл продукта в том, что он смотрит на
+# жизнь человека каждый день, а не ждёт, пока наберётся статистика.
+OBSERVATION_MIN_DAYS = 3
+
+# Перестановок для того же слоя. Их меньше, чем для выводов, и это честно:
+# наблюдение мы значимым не объявляем, а порог для него грубый - десятая доля.
+# Считается оно на каждую реплику, поэтому цена запроса тут важнее точности
+# третьего знака.
+OBSERVATION_PERMUTATIONS = 400
+
 
 @dataclass
 class Link:
@@ -42,8 +54,17 @@ class Link:
     days_without: int
     p_value: float           # доля случайных перестановок с не меньшим эффектом
     p_adjusted: float = 1.0  # то же с поправкой на число проверенных гипотез
-    source: str = "рассказ"  # откуда пришёл фактор: рассказ или прибор
+    source: str = "рассказ"  # откуда пришёл фактор: рассказ, прибор, погода или еда
     confounder: str = ""     # третий фактор, который может объяснять связь
+    # Дни «без привычки» набраны не только словами человека, но и нашей
+    # догадкой: он писал в дневник и про привычку не упомянул (`wam.habits`).
+    # Человеку про это надо сказать - на этом держится половина сравнения.
+    implied_without: bool = False
+    # Средние по группам. Разницы мало, когда говоришь на малых данных: «7,2
+    # против 5,1» человек проверяет глазами по своим же записям, а «лучше на
+    # 2,1 балла» проверить нечем.
+    value_with: float = 0.0
+    value_without: float = 0.0
 
     @property
     def direction(self) -> str:
@@ -57,6 +78,11 @@ class Link:
         """
         if self.confounder:
             return "объясняется другим"
+        # На горстке дней громких слов не говорим, каким бы убедительным ни
+        # выглядел разрыв: три дня против трёх - это наблюдение, и называть его
+        # «вероятной связью» значит выдавать слабые данные за крепкие.
+        if min(self.days_with, self.days_without) < MIN_DAYS_PER_GROUP:
+            return "наблюдение"
         if self.p_adjusted <= 0.01 and abs(self.effect) >= 1.0:
             return "подтверждено"
         if self.p_adjusted <= 0.05:
@@ -87,13 +113,18 @@ class Link:
 
 
 def find_links(timeline: Timeline, seed: int = 0,
-               permutations: int = PERMUTATIONS) -> list[Link]:
+               permutations: int = PERMUTATIONS,
+               min_days: int = MIN_DAYS_PER_GROUP) -> list[Link]:
     """
     Все связи, прошедшие порог наблюдений, отсортированные по силе эффекта.
 
     permutations - сколько раз перемешиваем дни. По умолчанию столько, сколько
     нужно, чтобы p-значение было честным до тысячных. Меньше ставят только там,
     где важна скорость, а не точность порогов: в тестах и в черновом прогоне.
+
+    min_days - сколько дней нужно в каждой группе. Опускать порог ниже семи
+    можно ровно с одним условием: то, что получилось, называется человеку
+    наблюдением, а не выводом. Так работает слой в `today.py`.
     """
     rng = random.Random(seed)
     links: list[Link] = []
@@ -111,7 +142,7 @@ def find_links(timeline: Timeline, seed: int = 0,
                 if same_thing and lag == 0:
                     continue
                 link = _test_pair(factor, factor_series, metric, metric_series, lag, rng,
-                                  permutations)
+                                  permutations, min_days)
                 if link is not None:
                     links.append(link)
 
@@ -128,10 +159,13 @@ def find_links(timeline: Timeline, seed: int = 0,
     # Без этой поправки продукт врёт уверенным тоном — и теряет доверие
     # на первом же случае, когда человек проверит вывод сам.
     tests = max(1, len(timeline.factor_names()) * len(timeline.metric_names()))
+    from .habits import implied_here
+
     for link in best.values():
         link.p_adjusted = round(min(1.0, link.p_value * tests), 4)
         link.source = _source_of(timeline, link.factor)
         link.confounder = find_confounder(timeline, link)
+        link.implied_without = implied_here(timeline, link.factor)
 
     return sorted(best.values(), key=lambda l: (l.p_adjusted, -abs(l.effect)))
 
@@ -187,16 +221,31 @@ def _effect_within(timeline: Timeline, link: Link, other: str, group_value: floa
 
 def _source_of(timeline: Timeline, factor: str) -> str:
     from .derive import DEVICE_SOURCES
+    from .food import SOURCE as FOOD_SOURCE
+    from .habits import SOURCE as IMPLIED_SOURCE
+    from .weather import SOURCE as WEATHER_SOURCE
 
     for record in timeline.days:
         for fact in record.facts:
-            if fact.kind == "factor" and fact.name == factor:
-                return "прибор" if fact.source in DEVICE_SOURCES else "рассказ"
+            if fact.kind != "factor" or fact.name != factor:
+                continue
+            # Наш достроенный ноль про происхождение привычки не говорит
+            # ничего: имя ей дал человек, а ноль - лишь его молчание.
+            if fact.source == IMPLIED_SOURCE:
+                continue
+            if fact.source in DEVICE_SOURCES:
+                return "прибор"
+            if fact.source == FOOD_SOURCE:
+                return "еда"
+            # Погоду человек не записывал - говорить ему «по вашим
+            # записям» про давление было бы неправдой.
+            return "погода" if fact.source == WEATHER_SOURCE else "рассказ"
     return "рассказ"
 
 
 def _test_pair(factor, factor_series, metric, metric_series, lag, rng,
-               permutations: int = PERMUTATIONS) -> Link | None:
+               permutations: int = PERMUTATIONS,
+               min_days: int = MIN_DAYS_PER_GROUP) -> Link | None:
     with_factor: list[float] = []
     without_factor: list[float] = []
 
@@ -207,7 +256,7 @@ def _test_pair(factor, factor_series, metric, metric_series, lag, rng,
             continue
         (with_factor if value > 0 else without_factor).append(outcome)
 
-    if len(with_factor) < MIN_DAYS_PER_GROUP or len(without_factor) < MIN_DAYS_PER_GROUP:
+    if len(with_factor) < min_days or len(without_factor) < min_days:
         return None
 
     effect = mean(with_factor) - mean(without_factor)
@@ -216,7 +265,9 @@ def _test_pair(factor, factor_series, metric, metric_series, lag, rng,
 
     p_value = _permutation_p(with_factor, without_factor, effect, rng, permutations)
     return Link(factor, metric, lag, round(effect, 2),
-                len(with_factor), len(without_factor), round(p_value, 4))
+                len(with_factor), len(without_factor), round(p_value, 4),
+                value_with=round(mean(with_factor), 2),
+                value_without=round(mean(without_factor), 2))
 
 
 def _permutation_p(group_a: list[float], group_b: list[float], effect: float, rng,

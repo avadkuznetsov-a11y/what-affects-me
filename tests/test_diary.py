@@ -6,6 +6,7 @@ from datetime import date, timedelta
 
 from wam.diary import (CODE_ALPHABET, CODE_LIFETIME, CODE_TRIES_PER_CHAT,
                        CODE_TRIES_TOTAL, GUEST_DIARIES, Diary, DiaryStore, looks_like_code)
+from wam.questions import apply_answer
 from wam.schema import DayRecord, Fact
 
 
@@ -116,6 +117,48 @@ def test_disconnect_unlinks_the_chats():
     assert store.key_for_chat(555) == "tg:555"
 
 
+def test_one_chat_can_be_unlinked_without_touching_the_rest():
+    """Отвязали один чат - остальные пишут дальше, а записи никуда не делись."""
+    store = DiaryStore()
+    store.bind(store.new_code("web"), 555)
+    store.bind(store.new_code("web"), 777)
+    store.get("web").add(DayRecord(day=date.today()))
+
+    assert store.unlink_chat(555, "web") is True
+    assert store.unlink_chat(555, "web") is False   # второй раз отвязывать нечего
+    assert store.linked_chats("web") == [777]
+    assert store.key_for_chat(555) == "tg:555"
+    assert store.get("web").timeline.days       # записи остались у страницы
+
+
+def test_a_chat_of_another_diary_is_not_unlinked():
+    """Отвязать можно только свой чат: чужой номер чужую привязку не рвёт."""
+    store = DiaryStore()
+    store.bind(store.new_code("web"), 555)
+    assert store.unlink_chat(555, "tg:999") is False
+    assert store.linked_chats("web") == [555]
+
+
+def test_code_is_live_only_while_the_store_answers_to_it():
+    """
+    Свежесть кода знает хранилище: код гаснет и по времени, и от перебора из
+    многих чатов. Тот, кто код выдал, по своим часам этого не увидит.
+    """
+    store = DiaryStore()
+    code = store.new_code("web")
+    assert store.code_is_live(code)
+    assert store.code_is_live(code.replace("-", " ").lower())   # как записан - неважно
+    assert not store.code_is_live("AAAA-BBBB")
+
+    for chat in range(CODE_TRIES_TOTAL):
+        store.bind("AAAA-BBBB", 1000 + chat)
+    assert not store.code_is_live(code)          # код погашен перебором
+
+    code = store.new_code("web")
+    store._codes[code] = (store._codes[code][0], time.time() - CODE_LIFETIME - 1)
+    assert not store.code_is_live(code)          # и просроченный тоже не живой
+
+
 def test_unbound_chat_gets_its_own_diary():
     store = DiaryStore()
     assert store.key_for_chat(555) == "tg:555"
@@ -160,6 +203,21 @@ def test_links_are_counted_once_per_change():
     assert diary.links() is first          # ничего не изменилось - считать нечего
     diary.today().add(Fact("metric", "энергия", 4.0))
     assert diary.links() is not first      # появился факт - пересчитали
+
+
+def test_answer_to_a_question_drops_the_cached_links():
+    """Ответ заменяет оценку: фактов столько же, а связи считать заново."""
+    diary = Diary("web")
+    for offset in range(8):
+        record = DayRecord(day=date.today() - timedelta(days=offset))
+        record.add(Fact("factor", "кофе"))
+        record.add(Fact("metric", "тревога", 3.0))
+        diary.add(record)
+    first = diary.links()
+
+    apply_answer(diary.today(), "Насколько сильной была тревога, от 0 до 10?", "на 9")
+    assert diary.today().metric("тревога") == 1.0   # названные 9 - очень тревожный день
+    assert diary.links() is not first
 
 
 def test_many_threads_write_into_one_diary():

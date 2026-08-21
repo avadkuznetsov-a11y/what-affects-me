@@ -22,7 +22,9 @@ import time
 from datetime import date
 
 from .derive import derive_factors
-from .insights import Link, find_links
+from .habits import imply_absences
+from .insights import (OBSERVATION_MIN_DAYS, OBSERVATION_PERMUTATIONS, Link,
+                       find_links)
 from .schema import DayRecord, Timeline
 
 # Код привязки живёт недолго: это пароль к дневнику, произнесённый вслух.
@@ -48,6 +50,10 @@ GUEST_LIFETIME = 7 * 24 * 60 * 60
 # Лента в памяти не растёт бесконечно: старые сообщения из показа уходят.
 MAX_MESSAGES = 400
 
+# Сколько реплик заданный вопрос ждёт ответа. Без срока он висит вечно и ловит
+# любое число: «выпил 2 кофе» назавтра становилось оценкой вчерашней тревоги.
+PENDING_TURNS = 3
+
 _secrets = random.SystemRandom()
 
 
@@ -60,8 +66,26 @@ class Diary:
     def __init__(self, key: str) -> None:
         self.key = key
         self.timeline = Timeline()
+        # Город человека - всё, что нужно для погоды. Пустой город - погоды
+        # просто нет, и дневник работает как раньше.
+        self.city = ""
         self.pending: str | None = None      # заданный вопрос, ждём на него ответ
+        self.pending_day: date | None = None  # день, про который спрашивали
+        self.pending_turns = 0               # сколько реплик вопрос уже ждёт
         self.asked: set[str] = set()         # чтобы не спрашивать одно и то же
+        # Привычки, про которые уже сказали, что о них известно. Пока набор тот
+        # же, повторять вывод незачем: слово в слово на каждую реплику он
+        # читается как заевшая пластинка.
+        self.concluded: frozenset[str] | None = None
+        # Наблюдения, уже сказанные вслух: повторять их каждой фразой - шум
+        self.observed: set[str] = set()
+        # День, по которому уже подвели итог: повторять его каждой
+        # репликой незачем
+        self.wrapped_day = None
+        # День, в который уже спросили про пропущенные дни. Один вопрос за
+        # разговор: человек вернулся в дневник, а его встречают допросом -
+        # так во второй раз он уже не вернётся.
+        self.gap_asked: date | None = None
         self.messages: list[dict] = []
         self.seq = 0                         # номер последнего сообщения в ленте
         # Один шаг разговора за раз. Замок повторный: его берут и сами методы
@@ -69,11 +93,20 @@ class Diary:
         self.lock = threading.RLock()
         self._links: list[Link] = []
         self._links_version: int | None = None
+        self._hints: list[Link] = []
+        self._hints_version: int | None = None
 
     # ── записи ────────────────────────────────────────────────────────────
     def today(self) -> DayRecord:
         """Запись за сегодня. Если её ещё нет - появится."""
-        day = date.today()
+        return self.record_for(date.today())
+
+    def record_for(self, day: date) -> DayRecord:
+        """
+        Запись за названный день; если её ещё нет - появится. Нужна, когда
+        человек рассказывает про прошедший день: «вчера пил вино» - это факт
+        про вчера, и класть его в сегодняшний день нельзя.
+        """
         for record in self.timeline.days:
             if record.day == day:
                 return record
@@ -90,6 +123,36 @@ class Diary:
                 return
         self.timeline.add(record)
 
+    # ── вопрос, который ждёт ответа ───────────────────────────────────────
+    def expect(self, question: str, day: date) -> None:
+        """Запомнить заданный вопрос: про какой он день и сколько уже ждёт."""
+        self.pending = question
+        self.pending_day = day
+        self.pending_turns = 0
+
+    def pending_question(self, day: date) -> str | None:
+        """
+        Вопрос, ответа на который ещё имеет смысл ждать; просроченный гасим
+        здесь же. Без срока вопрос ловил числа спустя сутки и приписывал оценку
+        дню, который человек уже не оценивал.
+        """
+        if self.pending is None:
+            return None
+        if self.pending_day != day or self.pending_turns >= PENDING_TURNS:
+            self.forget_question()
+            return None
+        return self.pending
+
+    def wait_longer(self) -> None:
+        """На вопрос не ответили - он ждёт ещё одну реплику."""
+        self.pending_turns += 1
+
+    def forget_question(self) -> None:
+        """Вопрос снят: на него ответили или он устарел."""
+        self.pending = None
+        self.pending_day = None
+        self.pending_turns = 0
+
     # ── связи ─────────────────────────────────────────────────────────────
     def links(self) -> list[Link]:
         """
@@ -102,11 +165,38 @@ class Diary:
         """
         with self.lock:
             if self._version() != self._links_version:
+                # Дни без привычки достраиваем здесь же: без них у привычки из
+                # рассказа одни единицы, группа «без фактора» пустая и связь не
+                # находится никогда - ни настоящая, ни ложная.
+                imply_absences(self.timeline)
                 self._links = find_links(derive_factors(self.timeline))
-                # derive_factors дописывает факторы с прибора, фактов после
+                # derive_factors и imply_absences дописывают факты, фактов после
                 # этого больше - запоминаем именно итоговый слепок
                 self._links_version = self._version()
             return self._links
+
+    def hints(self) -> list[Link]:
+        """
+        Связи, набравшие всего по три дня в каждой группе.
+
+        Выводами это не является, и продукт называет их человеку наблюдениями
+        (см. `today.py`). Нужны они потому, что настоящая связь появляется
+        недели через три, а смотреть на жизнь человека дневник должен с первой
+        недели - иначе он просто форма ввода.
+
+        Пары, по которым уже есть честная связь, отсюда убираем: сказать об
+        одном и том же дважды, да ещё разными словами, - значит запутать.
+        """
+        with self.lock:
+            # Заодно досчитает факторы прибора: слепок версии берём после этого
+            known = {(link.factor, link.metric) for link in self.links()}
+            if self._version() != self._hints_version:
+                found = find_links(self.timeline,
+                                   permutations=OBSERVATION_PERMUTATIONS,
+                                   min_days=OBSERVATION_MIN_DAYS)
+                self._hints = [l for l in found if (l.factor, l.metric) not in known]
+                self._hints_version = self._version()
+            return self._hints
 
     def _version(self) -> int:
         return hash(tuple((record.day, fact.kind, fact.name, fact.value, fact.source)
@@ -137,10 +227,15 @@ class Diary:
         """
         with self.lock:
             self.timeline.days = [d for d in self.timeline.days if d.day != date.today()]
-            self.pending = None
+            self.forget_question()
             self.asked = set()
+            self.concluded = None
+            self.observed = set()
+            self.wrapped_day = None
+            self.gap_asked = None
             self.messages = []
             self._links_version = None
+            self._hints_version = None
 
 
 class DiaryStore:
@@ -208,6 +303,16 @@ class DiaryStore:
             self._chats[chat_id] = key
             return key
 
+    def code_is_live(self, code: str) -> bool:
+        """
+        Отзовётся ли бот на этот код. Спрашивать надо здесь: коды гаснут не
+        только по времени - при переборе из многих чатов гаснут все разом, и
+        тот, кто выдал код, об этом не узнает.
+        """
+        with self._lock:
+            self._forget_stale()
+            return self._normalise(code) in self._codes
+
     def code_paused(self, chat_id: int) -> bool:
         """Не отвечаем ли мы сейчас этому чату на коды: он их подбирает."""
         with self._lock:
@@ -226,6 +331,21 @@ class DiaryStore:
             self._codes = {code: value for code, value in self._codes.items()
                            if value[0] != key}
             return chats
+
+    def unlink_chat(self, chat_id: int, key: str) -> bool:
+        """
+        Отвязать один чат от этого дневника. Записи остаются в дневнике
+        страницы: человек их не терял, он закрыл доступ. Дальше этот чат снова
+        пишет в свой дневник.
+
+        Ключ дневника спрашиваем не зря: отвязывать можно только свой чат,
+        чужой номер в запросе не должен рвать чужую привязку.
+        """
+        with self._lock:
+            if self._chats.get(chat_id) != key:
+                return False
+            del self._chats[chat_id]
+            return True
 
     def key_for_chat(self, chat_id: int) -> str:
         """

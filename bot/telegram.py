@@ -26,11 +26,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import date, datetime
 
 from wam import dialog
 from wam.diary import DiaryStore, looks_like_code
+from wam.habits import wrote_that_day
 from wam.phrases import say
 from wam.voice import SaluteSpeech, transcribe_voice
+
+from .reminders import DEFAULT_TIME, TEXT as REMINDER, Schedule
 
 API = "https://api.telegram.org"
 TIMEOUT = 30
@@ -48,9 +52,17 @@ HELP = (
     "дней, скажу, что на вас влияет.\n\n"
     "Если у вас открыта страница Миры, пришлите мне код привязки с неё - "
     "и записи из чата и со страницы будут в одном дневнике.\n\n"
+    f"Вечером, около {DEFAULT_TIME}, я напомню записать день - но только если вы "
+    "сегодня ничего не написали.\n\n"
     "/итоги - что уже известно\n"
+    "/напоминание - во сколько напоминать (например: /напоминание 20:30, "
+    "/напоминание выкл)\n"
     "/помощь - это сообщение"
 )
+
+# Как выключить и включить напоминания словом, а не временем.
+REMINDER_OFF = ("выкл", "выключить", "отключить", "не надо", "off", "нет")
+REMINDER_ON = ("вкл", "включить", "on", "да")
 
 
 class TelegramError(RuntimeError):
@@ -71,6 +83,7 @@ class TelegramBot:
         self.parser = parser
         self.timeout = timeout
         self.speech = SaluteSpeech() if os.environ.get("SALUTE_SPEECH_TOKEN") else None
+        self.reminders = Schedule()
 
     # ── общение с Telegram ────────────────────────────────────────────────
     def _hide(self, text: str) -> str:
@@ -126,11 +139,16 @@ class TelegramBot:
         if chat_id is None:
             return ""       # без чата отвечать некому, и дневник заводить не на кого
         text = (message.get("text") or "").strip()
+        # Напоминаем только тем, кто сам написал боту: рассылать незнакомым
+        # некому и незачем.
+        self.reminders.remember(chat_id)
 
         if text.startswith("/start") or text.startswith("/помощь") or text.startswith("/help"):
             return HELP
         if text.startswith("/итоги") or text.startswith("/summary"):
             return self.summary(chat_id)
+        if text.startswith("/напоминание") or text.startswith("/reminder"):
+            return self.set_reminder(chat_id, text.split(maxsplit=1)[1:])
         if not text:
             return "Пока понимаю только текст и голосовые. Напишите пару фраз о дне."
 
@@ -141,6 +159,7 @@ class TelegramBot:
         # Связи считаем один раз за сообщение: раньше они считались трижды,
         # и на дневнике в месяц бот замолкал на десяток секунд.
         messages = dialog.step(diary, text, links=diary.links(),
+                               hints=diary.hints(),
                                parser=self.parser, origin="chat")
         return self._as_text(messages)
 
@@ -186,6 +205,69 @@ class TelegramBot:
             blocks.append(block)
         return "\n\n".join(blocks)
 
+    # ── напоминания ───────────────────────────────────────────────────────
+    def set_reminder(self, chat_id: int, argument: list[str]) -> str:
+        """Ответ на /напоминание: показать время, поменять его или выключить."""
+        said = (argument[0] if argument else "").strip().lower()
+
+        if not said:
+            at = self.reminders.time_of(chat_id)
+            if not at:
+                return ("Напоминания выключены. Включить обратно: "
+                        "/напоминание вкл или /напоминание 20:30.")
+            return (f"Напоминаю в {at}, и только если вы за день ничего не написали. "
+                    "Поменять: /напоминание 20:30. Выключить: /напоминание выкл.")
+
+        if said in REMINDER_OFF:
+            self.reminders.turn_off(chat_id)
+            return "Больше не напоминаю. Передумаете - /напоминание вкл."
+        if said in REMINDER_ON:
+            return f"Хорошо, напомню в {self.reminders.turn_on(chat_id)}."
+
+        try:
+            at = self.reminders.set_time(chat_id, said)
+        except ValueError:
+            return "Не понял время. Напишите так: /напоминание 20:30."
+        return f"Буду напоминать в {at}, если за день от вас ничего не будет."
+
+    def _wrote_today(self, chat_id: int, today: date) -> bool:
+        """
+        Писал ли человек сегодня хоть куда-нибудь. Смотрим дневник, а не чат:
+        запись могла прийти и со страницы, а напоминание после неё выглядит
+        так, будто мы его не услышали.
+        """
+        diary = self.store.diary_for_chat(chat_id)
+        with diary.lock:
+            return any(record.day == today and wrote_that_day(record)
+                       for record in diary.timeline.days)
+
+    def remind(self, now: datetime | None = None) -> list[int]:
+        """
+        Разослать напоминания, кому пора. Возвращает чаты, которым написали.
+
+        Зовётся из цикла опроса между запросами к Telegram, поэтому падать тут
+        нельзя: не отправилось одному - остальные не при чём.
+        """
+        now = now or datetime.now()
+        sent: list[int] = []
+        for chat_id in self.reminders.chats():
+            if not self.reminders.due(chat_id, now):
+                continue
+            if self._wrote_today(chat_id, now.date()):
+                # Человек уже рассказал про день - напоминание было бы
+                # невежливым. День всё равно закрываем, чтобы не проверять его
+                # заново каждые полминуты.
+                self.reminders.mark_sent(chat_id, now.date())
+                continue
+            try:
+                self.send(chat_id, REMINDER)
+            except Exception as exc:
+                print(f"Напоминание не ушло: {self._hide(str(exc))}")
+                continue
+            self.reminders.mark_sent(chat_id, now.date())
+            sent.append(chat_id)
+        return sent
+
     def summary(self, chat_id: int) -> str:
         diary = self.store.diary_for_chat(chat_id)
         days = len(diary.timeline)
@@ -228,6 +310,14 @@ class TelegramBot:
         offset = 0
         failures = 0
         while stop is None or not stop.is_set():
+            # Отдельного потока для напоминаний не заводим: getUpdates всё
+            # равно возвращается не реже, чем раз в timeout секунд, и этого
+            # для расписания с точностью до минуты более чем достаточно.
+            try:
+                self.remind()
+            except Exception as exc:
+                print(f"Напоминания: {self._hide(str(exc))}")
+
             try:
                 updates = self._call("getUpdates", offset=offset, timeout=self.timeout)
                 failures = 0

@@ -36,13 +36,56 @@ def test_does_not_repeat_the_same_question():
     assert next_question(record, links, asked={first}) != first
 
 
-def test_silent_when_everything_is_clear():
+def test_asks_about_the_habit_when_the_state_is_clear():
+    """
+    Самочувствие названо, но про привычку известно только то, что она была.
+    Сколько чашек кофе и когда - без этого связь выйдет грубой, поэтому
+    уточняем. Заказчик сказал прямо: «вопросы нужны всегда, если цель
+    разобраться».
+    """
     record = RuleExtractor().extract("Пил кофе, спал восемь часов, бодрый", date(2026, 8, 1))
-    assert next_question(record) is None
+    question = next_question(record)
+    assert question is not None and "кофе" in question.lower()
+
+    # Второй раз про то же не спрашиваем
+    assert next_question(record, asked={question}) is None
 
 
 def test_answer_updates_the_day():
     record = RuleExtractor().extract("Тревога какая-то", date(2026, 8, 1))
     assert record.metric("тревога") == 3.0          # оценка по умолчанию
     apply_answer(record, "Насколько сильной была тревога, от 0 до 10?", "на 7 баллов")
-    assert record.metric("тревога") == 7.0          # заменилась ответом человека
+    # Спрашиваем «насколько СИЛЬНОЙ», а храним по шкале «больше значит лучше»:
+    # сильная тревога на 7 - это плохой день, то есть 3 внутри. Без переворота
+    # ответ записывался как спокойный день и все выводы по тревоге шли наизнанку.
+    assert record.metric("тревога") == 3.0
+
+
+def test_answer_spelled_with_a_word():
+    """«ноль» на «от 0 до 10» - такой же ответ, только цифры в нём нет."""
+    record = RuleExtractor().extract("Тревога какая-то", date(2026, 8, 1))
+    apply_answer(record, "Насколько сильной была тревога, от 0 до 10?", "ноль")
+    assert record.metric("тревога") == 10.0     # тревоги нет - день спокойный
+
+    record = RuleExtractor().extract("Тревога какая-то", date(2026, 8, 1))
+    apply_answer(record, "Насколько сильной была тревога, от 0 до 10?", "восемь")
+    assert record.metric("тревога") == 2.0      # тревога на 8 - день тяжёлый
+
+
+def test_does_not_ask_about_the_default_score_twice():
+    """
+    Оценка по умолчанию - 3.0, и ответ «3» её не меняет. Если спрашивать по
+    значению, вопрос про силу тревоги пойдёт по кругу.
+    """
+    record = RuleExtractor().extract("Тревога какая-то", date(2026, 8, 1))
+    question = next_question(record)
+    assert question and next_question(record, asked={question}) is None
+
+
+def test_answer_to_a_side_question_is_recorded_too():
+    """Уточнение сверх сказанного спрашивается другими словами - ответ на него терялся."""
+    record = RuleExtractor().extract("Настроение хорошее", date(2026, 8, 1))
+    question = ("Кстати, сил сегодня хватало? Оцените от 0 до 10 - "
+                "проверяю, влияет ли на это «кофе после 15:00».")
+    apply_answer(record, question, "на 7")
+    assert record.metric("энергия") == 7.0

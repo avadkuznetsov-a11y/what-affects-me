@@ -3,7 +3,7 @@ from demo.generate import build
 from wam.derive import derive_factors
 from conftest import FAST_PERMUTATIONS
 from wam.insights import find_links
-from wam.phrases import say, basis, next_step, _days, _score
+from wam.phrases import say, basis, next_step, period, days_count, _score
 
 
 def _link(factor, metric):
@@ -38,5 +38,12 @@ def test_no_technical_words_in_user_text():
 
 
 def test_russian_number_forms():
-    assert _days(1) == "1 день" and _days(2) == "2 дня" and _days(11) == "11 дней"
+    assert days_count(1) == "1 день" and days_count(2) == "2 дня" and days_count(11) == "11 дней"
     assert _score(2.0) == "2 балла" and "," in _score(1.6)
+
+
+def test_period_reads_like_speech():
+    """Срок человек выбирает сам, а окончание считать программе."""
+    assert period(21) == "21 день" and period(45) == "45 дней"
+    assert period(90) == "3 месяца" and period(150) == "5 месяцев"
+    assert period(180) == "полгода" and period(365) == "год"

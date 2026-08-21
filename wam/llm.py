@@ -119,10 +119,12 @@ def claude_complete(model: str = "claude-sonnet-5", timeout: int = 30) -> Comple
     def complete(prompt: str) -> str:
         import urllib.request
 
+        # temperature не задаём: свежие модели её не принимают и отвечают 400,
+        # а разбор молча откатывается на правила - человек видит «не понял, что
+        # записать» и думает, что программа не умеет разбирать речь.
         body = json.dumps({
             "model": model,
             "max_tokens": 600,
-            "temperature": 0.1,
             "messages": [{"role": "user", "content": prompt}],
         }).encode()
         request = urllib.request.Request(
@@ -133,7 +135,16 @@ def claude_complete(model: str = "claude-sonnet-5", timeout: int = 30) -> Comple
         )
         with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
             payload = json.loads(response.read())
-        return payload["content"][0]["text"]
+        # Ответ приходит списком блоков, и текстовый в нём не обязательно первый:
+        # свежие модели кладут перед ним свои служебные. Брать content[0] вслепую
+        # нельзя - на таком ответе разбор падал и молча уходил на словарь, а
+        # человек видел «не понял, что записать» на понятную фразу.
+        blocks = payload.get("content") or []
+        texts = [b.get("text", "") for b in blocks
+                 if isinstance(b, dict) and b.get("type") == "text"]
+        if not texts:
+            texts = [b.get("text", "") for b in blocks if isinstance(b, dict)]
+        return "\n".join(t for t in texts if t)
 
     return complete
 

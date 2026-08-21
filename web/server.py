@@ -13,23 +13,36 @@ from __future__ import annotations
 import json
 import os
 import threading
+from datetime import date
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 from bot.telegram import TelegramBot, token_is_shaped_right
 from demo.generate import build
-from wam import dialog
+from wam import dialog, food, weather
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
 from wam.experiments import Experiment, evaluate
 from wam.insights import find_links
 from wam.llm import available_engine
-from wam.phrases import basis, next_step, say
+from wam.phrases import basis, days_count, next_step, period, say
+from wam.questions import day_name
 
 HOST, PORT = "127.0.0.1", 8765
 DEFAULT_DAYS = 120
 WEB_KEY = "web"          # ключ дневника, который видит страница
+
+# Сроки дневника, которые можно выбрать на странице. Список один на программу:
+# страница строит из него выпадающий список, а сервер теми же словами называет
+# срок в выводах. Пока слова были в двух местах, выходило «21 дней» и «6 месяца».
+PERIODS: tuple[tuple[int, str], ...] = (
+    (21, "3 недели"),
+    (45, "1,5 месяца"),
+    (90, "3 месяца"),
+    (120, "4 месяца"),
+    (180, "полгода"),
+)
 
 # Речь разбирает модель, если для неё есть ключ в окружении. Ключей в
 # репозитории нет: у того, кто скачает код, будет работать разбор по правилам,
@@ -43,6 +56,41 @@ STORE = DiaryStore()
 
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
 MAX_BODY = 64 * 1024
+MAX_CITY = 80            # самое длинное название города в России короче вдвое
+
+# Показания прибора: свой предел на каждое. Прежний общий потолок в миллион
+# спасал только от падения - sleep_score 999999 разбор честно пересчитывал в
+# «качество сна 99999,9 из 10», и в ленте появлялась бессмыслица. Сон, стресс,
+# сатурация - шкалы до сотни; пульс покоя выше 220 не бывает ни у кого живого;
+# шаги считаются тысячами, рекорд суточной ходьбы - около 100 тысяч.
+MAX_READING = {
+    "sleep_score": 100, "sleepAnalysis": 100,
+    "stress_level": 100, "energy": 100,
+    "spo2": 100, "oxygenSaturation": 100,
+    "resting_hr": 220, "restingHeartRate": 220,
+    "steps": 100_000, "stepCount": 100_000,
+}
+DEFAULT_READING = 100      # поле, которого мы не знаем, разбор всё равно не возьмёт
+
+# Пределы для КБЖУ, введённого руками. Границы взяты с большим запасом от
+# всего, что человек способен съесть за сутки: дело тут не в норме, а в том,
+# чтобы опечатка на лишний ноль не стала фактором дня.
+MAX_FOOD = {"калории": 20_000.0, "белки": 1000.0, "жиры": 1000.0, "углеводы": 2000.0}
+
+# Выгрузка КБЖУ: строка на день - десятки байт, год строк укладывается в
+# десяток килобайт. Больше общего предела на тело запроса всё равно не пройдёт.
+MAX_CSV = MAX_BODY // 2
+
+
+def period_name(days: int) -> str:
+    """
+    Как назвать срок словами. Для сроков из списка берём то же название, что
+    человек видел в списке, для любого другого числа - обычную фразу по-русски.
+    """
+    for known, name in PERIODS:
+        if known == days:
+            return name
+    return period(days)
 
 
 def page() -> bytes:
@@ -51,13 +99,32 @@ def page() -> bytes:
     модуля неудобно - редактор не подсказывает ни в html, ни в javascript.
     """
     html = (Path(__file__).parent / "page.html").read_text(encoding="utf-8")
-    return html.replace("__ENGINE__", ENGINE_NAME).encode("utf-8")
+    # Сроки уезжают внутрь <script>, поэтому «</» в них закрыло бы тег и
+    # остаток строки браузер прочёл бы как разметку. Сейчас там константы, но
+    # страховка дешевле разбирательства, если список станет настраиваемым.
+    periods = json.dumps([{"days": days, "name": name} for days, name in PERIODS],
+                         ensure_ascii=False).replace("</", "<\\/")
+    html = (html.replace("__ENGINE__", ENGINE_NAME)
+                .replace("__PERIODS__", periods)
+                .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS)))
+    return html.encode("utf-8")
 
 
 # ── состояние разговора ───────────────────────────────────────────────────
 
 _CACHE: dict[int, tuple] = {}
-_CACHE_LOCK = threading.Lock()
+_CACHE_LOCKS: dict[int, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+
+
+def _cache_lock(days: int) -> threading.Lock:
+    """
+    Свой замок на каждый срок. Полгода считаются секунд семь, и общий замок на
+    это время подвешивал все остальные запросы - даже те, у которых ответ уже
+    посчитан. Замков не больше, чем сроков: число дней зажато между 14 и 365.
+    """
+    with _LOCKS_GUARD:
+        return _CACHE_LOCKS.setdefault(days, threading.Lock())
 
 
 def _diary(days: int = DEFAULT_DAYS):
@@ -65,7 +132,7 @@ def _diary(days: int = DEFAULT_DAYS):
     ready = _CACHE.get(days)
     if ready is not None:
         return ready
-    with _CACHE_LOCK:
+    with _cache_lock(days):
         # пока ждали замок, соседний запрос мог всё посчитать
         if days not in _CACHE:
             timeline = derive_factors(build(days=days))
@@ -122,7 +189,7 @@ class TelegramRunner:
             self._token = token
             self.username = username
             self.error = ""
-            self.code = self.store.new_code(self.key)   # код даём только после getMe
+            self._issue_code()      # код даём только после getMe
             self._stop = threading.Event()
             self._thread = threading.Thread(
                 target=bot.run, kwargs={"stop": self._stop, "on_error": self._note},
@@ -131,32 +198,62 @@ class TelegramRunner:
         return username
 
     def disconnect(self) -> None:
+        """
+        Выключить бота. Заодно отвязываем чаты: пока этого не было, «Отключить»
+        оставляло чужому чату доступ к дневнику - отозвать его было нечем.
+        """
         with self._lock:
             self._halt()
+            self.store.unlink(self.key)
             self._token = ""
             self.username = ""
             self.code = ""
             self.error = ""
+
+    def unlink(self, chat_id: int | None = None) -> None:
+        """
+        Отвязать один чат или все сразу; бот при этом остаётся на связи.
+
+        Новый код после отвязки не выдаём: человек нажал «Отвязать», чтобы
+        закрыть доступ, а не чтобы открыть новое окно привязки. Понадобится -
+        на странице есть кнопка «Показать новый код».
+        """
+        with self._lock:
+            if chat_id is None:
+                self.store.unlink(self.key)
+            else:
+                self.store.unlink_chat(chat_id, self.key)
 
     def new_code(self) -> str:
         """Новый код привязки. Без подключённого бота он бессмысленен."""
         with self._lock:
             if not self.connected:
                 return ""
-            self.code = self.store.new_code(self.key)
-            return self.code
+            return self._issue_code()
 
     def state(self) -> dict:
         """Что показать в панели. Токена тут нет и быть не может."""
-        linked = bool(self.store.linked_chats(self.key))
+        chats = self.store.linked_chats(self.key)
+        # Свежесть кода знает только хранилище: код гаснет и по времени, и от
+        # перебора из многих чатов. По своим часам выходило, что код ещё жив,
+        # а бот на него уже не отзывался.
+        live = bool(self.code) and self.store.code_is_live(self.code)
         return {
             "connected": self.connected,
             "username": self.username,
-            "linked": linked,
-            "code": "" if linked else self.code,
+            "linked": bool(chats),
+            "chats": chats,
+            # Просроченный код в панели - ловушка: человек диктует его боту, а
+            # тот отказывает. Лучше честно попросить показать новый.
+            "code": self.code if live and not chats else "",
+            "code_stale": bool(self.code) and not live and not chats,
             "error": self.error,
             "has_env_token": bool(os.environ.get("TELEGRAM_TOKEN", "").strip()),
         }
+
+    def _issue_code(self) -> str:
+        self.code = self.store.new_code(self.key)
+        return self.code
 
     def _note(self, text: str) -> None:
         """Последняя беда опроса - её показываем в панели, а не только в консоли."""
@@ -172,20 +269,143 @@ class TelegramRunner:
 RUNNER = TelegramRunner(STORE)
 
 
-def _say(text: str, ring: dict | None, days: int) -> dict:
+def _say(text: str, ring: dict | None, days: int, since: int = 0) -> dict:
     """
-    Один шаг разговора на странице. Вопросы и выводы берём по придуманному
-    дневнику: на записях за один день выводов не бывает, а показать, как они
-    выглядят, надо сразу.
+    Один шаг разговора на странице.
+
+    Выводы в разговоре - только по записям самого человека. Раньше сюда шли
+    связи придуманного дневника, и разговор выходил бессвязным: человек пишет
+    «ел мясо, пил пиво», а в ответ ему рассказывают про кофе и аврал, которых
+    он не называл. Придуманный дневник никуда не делся - он показывается
+    целиком по кнопке «Показать все выводы», где сразу сказано, что он для
+    показа.
+
+    since - номер последнего сообщения, которое страница уже показала. Отдаём
+    ленту от него, а не от начала шага: сообщение из чата, пришедшее до нажатия
+    «Отправить», иначе пропадало навсегда - страница ставила lastSeq за него, и
+    в /state оно больше не попадало. Повторы страница отбивает сама по номеру.
     """
-    _, links = _diary(days)
     diary = STORE.get(WEB_KEY)
-    messages = dialog.step(diary, text, ring=ring, links=links, parser=PARSER,
-                           origin="page", links_from_demo=True)
-    return {"messages": messages, "seq": diary.seq}
+    with diary.lock:
+        before = diary.seq      # номер до шага: с ним и сверяем чужой since
+    dialog.step(diary, text, ring=ring, links=diary.links(), hints=diary.hints(),
+                parser=PARSER, origin="page")
+    # Лента и её номер - под одним замком, иначе сообщение, легшее между ними,
+    # страница не покажет уже никогда.
+    with diary.lock:
+        return {"messages": diary.feed(_shown(since, before)), "seq": diary.seq}
 
 
-def _summary_step(days: int) -> dict:
+def _shown(since: int, seq: int) -> int:
+    """
+    Номер, до которого лента у страницы уже есть. Номер больше нашего - из
+    прошлой жизни сервера: программу перезапустили, а вкладка осталась
+    открытой со своим счётчиком. Отдавать ей на такой номер пустоту нельзя -
+    человек не увидит даже собственного ответа, страница выглядит немой.
+    Считаем такой номер нулём и отдаём ленту с начала.
+
+    Сверяться надо с номером ДО шага: после перезапуска первый же ответ
+    добирал номера до чужого since, и первая реплика пропадала навсегда.
+    """
+    return since if since <= seq else 0
+
+
+def _set_city(value) -> dict:
+    """
+    Город человека - всё, что нужно для погоды.
+
+    Название сразу проверяем геокодингом: сказать «такого города не нашлось»
+    надо в момент ввода, а не молчанием про погоду через неделю. Но если
+    проверка не прошла, город всё равно запоминаем - сети могло не быть, а
+    выбрасывать введённое из-за этого нечестно.
+
+    Геокодинг - сетевой вызов, поэтому замок дневника берём после него.
+    """
+    city = ("" if value is None else str(value))[:MAX_CITY].strip()
+    found = bool(city) and weather.coords(city) is not None
+    diary = STORE.get(WEB_KEY)
+    with diary.lock:
+        diary.city = city
+    return {"ok": True, "city": city, "known": found}
+
+
+def _food_step(payload: dict, since: int = 0) -> dict:
+    """
+    Еда числами: КБЖУ за сегодня руками или выгрузка из приложения.
+
+    Отдельным запросом, а не вместе с репликой: числа человек вводит один раз
+    за день, а рассказывает про день сколько угодно раз, и таскать их с каждой
+    фразой незачем.
+    """
+    diary = STORE.get(WEB_KEY)
+    try:
+        by_day = _food_days(payload)
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc)}
+    if not by_day:
+        return {"ok": False, "error": "Ни одной строки с числами не разобрал. "
+                                      "Нужны колонки: дата, калории, белки, жиры, углеводы."}
+
+    with diary.lock:
+        before = diary.seq
+        food.attach(diary.timeline, by_day)
+        if len(by_day) == 1:
+            day, values = next(iter(by_day.items()))
+            when = "за сегодня" if day == date.today() else f"за {day_name(day, date.today())}"
+            diary.say("me", f"КБЖУ {when}: {food.told(values)}")
+        else:
+            first, last = min(by_day), max(by_day)
+            diary.say("me", f"Загрузил КБЖУ за {days_count(len(by_day))}: "
+                            f"с {first.isoformat()} по {last.isoformat()}")
+        diary.say("bot", "Записал. Числа стали факторами дня наравне с привычками.",
+                  note=_food_note(by_day))
+        # Число дней словами считает программа, а не страница: «2 дней» на ней
+        # уже выходило, а правил склонения в javascript нет.
+        return {"ok": True, "days": len(by_day), "told": days_count(len(by_day)),
+                "messages": diary.feed(_shown(since, before)), "seq": diary.seq}
+
+
+def _food_note(by_day: dict) -> str:
+    """
+    Что вышло из чисел. Перечисляем только то, что где-то сработало: строка
+    «недоел: не было» за каждый день - это шум, а не объяснение.
+    """
+    names = []
+    for values in by_day.values():
+        for fact in food.day_factors(values):
+            if fact.value > 0 and fact.name not in names:
+                names.append(fact.name)
+    if not names:
+        return ("Ни один порог не сработал: по этим числам день обычный. "
+                "Дни без перекоса тоже записаны - без них не с чем сравнивать.")
+    return "Факторы из чисел: " + ", ".join(names) + "."
+
+
+def _food_days(payload: dict) -> dict:
+    """Числа по дням из тела запроса: либо выгрузка, либо один день руками."""
+    table = payload.get("csv")
+    if table is not None:
+        if not isinstance(table, str):
+            raise ValueError("csv: ожидается текст")
+        return food.read_csv(table[:MAX_CSV])
+
+    values: dict[str, float] = {}
+    for name, limit in MAX_FOOD.items():
+        value = payload.get(name)
+        if value is None or value == "":
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"«{name}»: ожидается число")
+        # NaN не сравнивается ни с чем, поэтому ловим его отдельно
+        if value != value or not 0 <= value <= limit:
+            raise ValueError(f"«{name}»: число не похоже на правду")
+        values[name] = float(value)
+    if not values:
+        return {}
+    return {date.today(): values}
+
+
+def _summary_step(days: int, since: int = 0) -> dict:
     """Все выводы разом. Идут в ту же ленту, что и разговор."""
     ready = _summary(days)      # тяжёлую статистику считаем до замка дневника
     diary = STORE.get(WEB_KEY)
@@ -194,21 +414,22 @@ def _summary_step(days: int) -> dict:
         diary.say("me", "Что уже известно?")
         for message in ready:
             diary.say(message["kind"], message["text"], message.get("note", ""))
-        return {"messages": diary.feed(before), "seq": diary.seq}
+        # От номера, который есть у страницы: см. _say
+        return {"messages": diary.feed(_shown(since, before)), "seq": diary.seq}
 
 
 def _summary(days: int) -> list[dict]:
     timeline, links = _diary(days)
     strong = [l for l in links if l.strength != "наблюдение"]
-    period = f"{days} дней" if days < 60 else f"{round(days / 30)} месяца"
+    named = period_name(days)
 
     if not strong:
-        return [{"kind": "bot", "text": f"За {period} ничего надёжного не набралось. "
+        return [{"kind": "bot", "text": f"За {named} ничего надёжного не набралось. "
                                         "Это тоже ответ: случайных совпадений не показываю."}]
 
     messages = [{
         "kind": "bot",
-        "text": f"Показываю придуманный дневник за {period} - он нужен, чтобы было видно, "
+        "text": f"Показываю придуманный дневник за {named} - он нужен, чтобы было видно, "
                 f"как работают выводы. Ваши сегодняшние записи в него не входят: за один день "
                 f"выводов не бывает.\n\n"
                 f"Проверено {len(links)} пар «привычка - состояние», осталось {len(strong)}, "
@@ -239,13 +460,22 @@ class Handler(BaseHTTPRequestHandler):
             # Перезагрузка страницы разговор не сбрасывает: для этого есть
             # кнопка «Начать заново».
             self._send(page(), "text/html; charset=utf-8")
-        elif path == "/summary":
-            self._json(_summary_step(_days_param(self.path)))
         elif path == "/state":
             since = _int_param(self.path, "since")
+            # Панель бота спрашиваем до замка дневника: она берёт замок
+            # хранилища, а хранилище местами берёт замок дневника под своим -
+            # обратный порядок рано или поздно свёл бы два потока намертво.
+            telegram = RUNNER.state()
             diary = STORE.get(WEB_KEY)
-            self._json({"telegram": RUNNER.state(),
-                        "messages": diary.feed(since), "seq": diary.seq})
+            # Лента и номер - одним куском: сообщение из чата, легшее между
+            # ними, страница больше никогда не покажет - поставит по нему
+            # lastSeq. Заодно feed не перебирает список, который в этот
+            # момент подрезает другой поток.
+            with diary.lock:
+                messages, seq = diary.feed(_shown(since, diary.seq)), diary.seq
+                city = diary.city
+            self._json({"telegram": telegram, "messages": messages, "seq": seq,
+                        "city": city})
         else:
             self.send_error(404)
 
@@ -253,8 +483,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._ours():
             return
         path = urlparse(self.path).path
-        if path not in ("/say", "/reset", "/telegram/connect",
-                        "/telegram/disconnect", "/telegram/code"):
+        if path not in ("/say", "/summary", "/reset", "/city", "/food",
+                        "/telegram/connect", "/telegram/disconnect",
+                        "/telegram/code", "/telegram/unlink"):
+            self._drain()
             self.send_error(404)
             return
 
@@ -264,18 +496,34 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/say":
             try:
-                text, ring, days = _checked(payload)
+                text, ring, days, since = _checked(payload)
             except ValueError as exc:
                 self._fail(400, str(exc))
                 return
-            self._json(_say(text, ring, days))
+            self._json(_say(text, ring, days, since))
+        elif path == "/summary":
+            # Выводы дописываются в ленту, то есть меняют состояние. Такое
+            # нельзя отдавать по GET: чужая страница вызовет его картинкой.
+            self._json(_summary_step(_clamp_days(payload.get("days")),
+                                     _seq(payload.get("since"))))
         elif path == "/reset":
             STORE.get(WEB_KEY).reset()
             self._json({"ok": True})
+        elif path == "/city":
+            self._json(_set_city(payload.get("city")))
+        elif path == "/food":
+            self._json(_food_step(payload, _seq(payload.get("since"))))
         elif path == "/telegram/connect":
             self._connect(payload)
         elif path == "/telegram/disconnect":
             RUNNER.disconnect()
+            self._json({"ok": True})
+        elif path == "/telegram/unlink":
+            chat = payload.get("chat")
+            if chat is not None and (isinstance(chat, bool) or not isinstance(chat, int)):
+                self._fail(400, "chat: ожидается число")
+                return
+            RUNNER.unlink(chat)
             self._json({"ok": True})
         else:
             self._json({"ok": True, "code": RUNNER.new_code()})
@@ -308,29 +556,50 @@ class Handler(BaseHTTPRequestHandler):
         """
         host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
         if host not in ("127.0.0.1", "localhost", "::1"):
+            self._drain()
             self._fail(403, "запрос не с этой страницы")
             return False
         origin = self.headers.get("Origin")
         if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"):
+            self._drain()
+            self._fail(403, "запрос с другого сайта")
+            return False
+        # Origin шлют не всегда: у картинки, скрипта и перехода по ссылке его
+        # нет, а запрос всё равно чужой. Про это честно говорит Sec-Fetch-Site:
+        # свои запросы - same-origin, набранный в строке адреса - none.
+        site = self.headers.get("Sec-Fetch-Site")
+        if site and site not in ("same-origin", "none"):
+            self._drain()
             self._fail(403, "запрос с другого сайта")
             return False
         return True
+
+    def _drain(self) -> None:
+        """
+        Дочитать тело перед отказом. Иначе браузер получит обрыв связи вместо
+        ответа и человек не узнает, что случилось, а на живом соединении
+        остаток тела разберётся как следующий запрос. Совсем большое тело не
+        читаем - дешевле закрыть соединение.
+        """
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = -1         # длину не разобрать, читать нечего - закрываемся
+        if 0 < length <= MAX_BODY * 2:
+            self.rfile.read(length)
+        elif length != 0:
+            self.close_connection = True
 
     def _payload(self) -> dict | None:
         """Тело запроса как словарь. При любой беде отвечает сама и отдаёт None."""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
+            self._drain()
             self._fail(400, "непонятная длина запроса")
             return None
         if length < 0 or length > MAX_BODY:
-            # Тело всё равно надо вычитать, иначе браузер получит обрыв связи
-            # вместо ответа и человек не узнает, что случилось. Совсем большое
-            # не читаем - тогда просто закрываем соединение.
-            if 0 < length <= MAX_BODY * 2:
-                self.rfile.read(length)
-            else:
-                self.close_connection = True
+            self._drain()
             self._fail(413, "слишком длинный запрос")
             return None
         try:
@@ -367,14 +636,6 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def _days_param(path: str, default: int = DEFAULT_DAYS) -> int:
-    """Срок из строки запроса. Что угодно кривое - берём срок по умолчанию."""
-    values = parse_qs(urlparse(path).query).get("days")
-    if not values:
-        return default
-    return _clamp_days(values[0], default)
-
-
 def _int_param(path: str, name: str, default: int = 0) -> int:
     """Целое из строки запроса; что угодно кривое - значение по умолчанию."""
     values = parse_qs(urlparse(path).query).get(name)
@@ -387,14 +648,30 @@ def _int_param(path: str, name: str, default: int = 0) -> int:
 
 
 def _clamp_days(value, default: int = DEFAULT_DAYS) -> int:
-    """Срок дневника: только целое число в разумных пределах."""
+    """
+    Срок дневника: только целое число в разумных пределах. Infinity в теле
+    запроса json.loads принимает молча, а int() от него бросает OverflowError -
+    и запрос обрывался без ответа вместо честного «беру срок по умолчанию».
+    """
     try:
         return max(14, min(365, int(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return default
 
 
-def _checked(payload: dict) -> tuple[str, dict | None, int]:
+def _seq(value, default: int = 0) -> int:
+    """
+    Номер последнего показанного сообщения из тела запроса. Кривое значение -
+    это не повод отказывать: ноль просто вернёт страницу ленту с начала, а
+    повторы она отобьёт сама по номеру.
+    """
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _checked(payload: dict) -> tuple[str, dict | None, int, int]:
     """
     Разбор тела запроса /say. Кривые данные - это ошибка запроса, а не сбой
     сервера: строка вместо числа в показаниях кольца раньше доходила до
@@ -405,16 +682,29 @@ def _checked(payload: dict) -> tuple[str, dict | None, int]:
     text = text[:MAX_TEXT]
 
     days = _clamp_days(payload.get("days"))
+    since = _seq(payload.get("since"))
 
     ring = payload.get("ring")
     if ring is not None:
         if not isinstance(ring, dict):
             raise ValueError("ring: ожидается объект")
+        readings = {}
         for key, value in ring.items():
+            # Не число - это сломанный запрос, о нём лучше сказать прямо.
             if isinstance(value, bool) or not isinstance(value, (int, float)):
                 raise ValueError(f"ring: «{key}» должно быть числом")
-        ring = dict(ring)
-    return text, ring, days
+            # А вот число не по шкале - всего лишь показание, которому мы не
+            # верим: выкидываем его одно. Отказ на весь запрос стоил человеку
+            # всего рассказа про день из-за одного кривого поля.
+            # Диапазон считаем со знаком: по модулю проходил sleep_score -100
+            # и превращался в «качество сна -100 из 10». NaN не сравнивается
+            # ни с чем, поэтому ловим его отдельно.
+            limit = MAX_READING.get(key, DEFAULT_READING)
+            if value != value or not 0 <= value <= limit:
+                continue
+            readings[key] = value
+        ring = readings
+    return text, ring, days, since
 
 
 def main() -> None:

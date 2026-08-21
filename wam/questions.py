@@ -15,8 +15,11 @@
 """
 from __future__ import annotations
 
+import re
+from datetime import date
+
 from .insights import Link
-from .schema import DayRecord
+from .schema import DayRecord, Fact
 
 # Как спросить про конкретный показатель
 _ASK_METRIC = {
@@ -37,6 +40,69 @@ _EXTRA_ASK = {
     "качество сна":  "как спалось?",
 }
 
+# Чего не хватает про названную привычку, чтобы связь была не грубой.
+# «Пил вино» - два бокала и бутылка иначе станут одним и тем же фактом;
+# «гулял» - двадцать минут и три часа тоже. Спрашиваем по-человечески и по
+# одной детали, а не анкетой.
+_ASK_DETAIL: dict[str, str] = {
+    "алкоголь":         "Сколько выпили - пара бокалов или больше?",
+    "вино":             "Сколько вина получилось - бокал, два, больше?",
+    "пиво":             "Сколько пива вышло - кружка, две, больше?",
+    "кофе":             "Сколько чашек кофе и во сколько была последняя?",
+    "прогулка":         "Долго гуляли - минут двадцать или пару часов?",
+    "тренировка":       "Что за тренировка и сколько она длилась?",
+    "работа":           "Долго работали и насколько тяжело шло?",
+    "много встреч":     "Сколько встреч набралось за день?",
+    "сладкое":          "Сладкого много было или чуть-чуть?",
+    "экран перед сном": "Долго сидели в телефоне перед сном?",
+    "поздний отбой":    "Во сколько легли?",
+    "перелёт":          "Долгий был перелёт и меняли ли часовой пояс?",
+    "аврал":            "Аврал весь день или к вечеру отпустило?",
+}
+
+
+def detail_of(question: str) -> str:
+    """
+    Про какую привычку спрашивали деталь. Пустая строка - вопрос не про деталь.
+
+    Нужно, чтобы ответ было куда записать: спросить «сколько чашек кофе» и не
+    принять «две чашки, последняя в пять» - хуже, чем не спрашивать вовсе.
+    """
+    for name, text in _ASK_DETAIL.items():
+        if text == question:
+            return name
+    return ""
+
+
+# Вино и пиво - это и есть алкоголь, и разбор записывает их вместе. Спрашивать
+# и про то и про другое значит переспрашивать одно и то же другими словами.
+_SAME_THING: dict[str, str] = {"вино": "алкоголь", "пиво": "алкоголь"}
+
+
+def detail_question(factors: set[str], asked: set[str] | None = None) -> str | None:
+    """
+    Что уточнить про названные привычки. None - уточнять нечего.
+
+    Порядок вопросов идёт по списку выше, а не по тому, в каком порядке человек
+    назвал привычки: спрашивать про алкоголь важнее, чем про сладкое.
+    """
+    asked = asked or set()
+    # Про что уже спрашивали - в том числе другими словами
+    covered = set()
+    for name, question in _ASK_DETAIL.items():
+        if question in asked:
+            covered.add(name)
+            covered.add(_SAME_THING.get(name, name))
+
+    for name, question in _ASK_DETAIL.items():
+        if name not in factors:
+            continue
+        if name in covered or _SAME_THING.get(name, name) in covered:
+            continue
+        return question
+    return None
+
+
 NOTHING_UNDERSTOOD = (
     "Не понял, что записать. Скажите, что делали и как себя чувствовали, "
     "например: «пил кофе, спал часов пять, с утра тревожно»."
@@ -46,6 +112,56 @@ NO_STATE = (
     "Записал. А как вы себя чувствовали? Без этого не с чем связывать привычки - "
     "хватит пары слов: «выспался», «разбитый», «спокойный день»."
 )
+
+
+# ── пропущенные дни ───────────────────────────────────────────────────────
+# Дневник бросают не потому, что он плохой, а потому что пропустили день,
+# потом другой - и возвращаться уже неловко. Один короткий вопрос про пропуск
+# и возвращает записи, и снимает эту неловкость: мы заметили, что человека не
+# было, и ждём его, а не ругаем.
+#
+# Больше трёх дней подряд не перечисляем: список из семи дней - это уже анкета,
+# от которой человек и уйдёт.
+MAX_NAMED_DAYS = 3
+
+# Числа словами: «два дня» читается по-человечески, «2 дня» - как отчёт.
+# Дальше четырёх идут «дней», и цифра там уже не режет глаз.
+_COUNT_WORDS = {2: "два дня", 3: "три дня", 4: "четыре дня"}
+
+_WEEKDAY_NAMES = ("в понедельник", "во вторник", "в среду", "в четверг",
+                  "в пятницу", "в субботу", "в воскресенье")
+
+
+def day_name(day: date, today: date) -> str:
+    """Как назвать прошедший день человеку: «вчера», «позавчера», «в среду»."""
+    ago = (today - day).days
+    if ago == 1:
+        return "вчера"
+    if ago == 2:
+        return "позавчера"
+    return _WEEKDAY_NAMES[day.weekday()]
+
+
+def gap_question(missed: list[date], today: date) -> str:
+    """
+    Вопрос про пропущенные дни. Пустая строка - спрашивать не о чем.
+
+    Вопрос ровно один и короткий: перечислить человеку каждый пропущенный день
+    отдельной строкой - это анкета, а не разговор.
+    """
+    if not missed:
+        return ""
+    if len(missed) == 1:
+        return "Вчера записи не было - расскажете, что было?"
+
+    # В перечне зовём дни по неделе, а не «позавчера и вчера»: человек
+    # вспоминает свой день именно так - «а что было в среду?».
+    named = [_WEEKDAY_NAMES[day.weekday()] for day in missed[-MAX_NAMED_DAYS:]]
+    listed = ", ".join(named[:-1]) + " и " + named[-1]
+    count = _COUNT_WORDS.get(len(missed), f"{len(missed)} дней")
+    if len(missed) > MAX_NAMED_DAYS:
+        return f"Вас не было {count} - расскажете хотя бы, что было {listed}?"
+    return f"Вас не было {count} - расскажете, что было {listed}?"
 
 
 def next_question(record: DayRecord, links: list[Link] | None = None,
@@ -71,8 +187,9 @@ def next_question(record: DayRecord, links: list[Link] | None = None,
         if not question:
             continue
         if metrics:
-            # Про самочувствие человек уже сказал, это уточнение сверх того
-            short = _EXTRA_ASK.get(link.metric, f"«{link.metric}» сегодня как?")
+            # Про самочувствие человек уже сказал, это уточнение сверх того.
+            # Ключи у обоих списков одни и те же, поэтому уточнение найдётся.
+            short = _EXTRA_ASK[link.metric]
             question = (f"Кстати, {short} Оцените от 0 до 10 - "
                         f"проверяю, влияет ли на это «{link.factor}».")
         else:
@@ -84,49 +201,110 @@ def next_question(record: DayRecord, links: list[Link] | None = None,
         return question
 
     # Состояние названо словом, но без силы: «тревога какая-то» - это оценка
-    # по умолчанию, лучше уточнить у человека
+    # по умолчанию, лучше уточнить у человека. Один раз: человек мог ответить
+    # ровно «3», и тогда оценка совпадает с той, что поставили правила, - второй
+    # такой вопрос выглядит как заклинивший бот.
     for fact in record.facts:
         if fact.kind == "metric" and fact.name in ("тревога", "головная боль") and fact.value == 3.0:
-            return _ASK_METRIC[fact.name]
+            question = _ASK_METRIC[fact.name]
+            if question not in asked:
+                return question
+
+    # Привычка названа, но без меры: «пил вино» - а сколько? «гулял» - а долго?
+    # Без этого связь получается грубой: два бокала и бутылка окажутся одним и
+    # тем же фактом. Спрашиваем по одной детали за раз и только один раз про
+    # каждую привычку.
+    detail = detail_question(factors, asked)
+    if detail:
+        return detail
 
     return None
 
 
-def apply_answer(record: DayRecord, question: str, answer: str) -> DayRecord:
+def metric_of(question: str) -> str:
     """
-    Разобрать ответ на уточняющий вопрос и дописать его в тот же день.
+    Про какой показатель спрашивали. Пустая строка - вопрос не про показатель.
 
-    Ответ короткий и без контекста: «на 7», «часов шесть», «нормально».
-    Поэтому сначала ищем в нём просто число - в ответе на вопрос со шкалой
-    это самый частый случай, - и только потом пробуем общий разбор.
+    Вопрос собирается двумя способами: прямо
+    из _ASK_METRIC и коротким уточнением из _EXTRA_ASK («Кстати, сил сегодня
+    хватало? Оцените от 0 до 10...»). По одному только _ASK_METRIC ответ на
+    второй вид вопроса терялся: показатель не находился, и «на 7» уходило в
+    общий разбор, где никакого показателя нет.
     """
-    import re
+    lowered = question.lower()
+    for known in (_ASK_METRIC, _EXTRA_ASK):
+        for name, text in known.items():
+            if text.lower() in lowered:
+                return name
+    return ""
 
-    from .extract import RuleExtractor, Fact, _word_score
 
-    metric = next((name for name, text in _ASK_METRIC.items()
-                   if text.lower() in question.lower()), "")
+def score_in(question: str, answer: str, day: date) -> float | None:
+    """
+    Оценка, названная в ответ на уточняющий вопрос. None - оценки в реплике нет.
+
+    Ответ короткий и без контекста: «на 7», «часов шесть», «ноль», «нормально».
+    Поэтому сначала ищем просто число - в ответе на вопрос со шкалой это самый
+    частый случай, - потом число словом и только потом общий разбор.
+
+    Отдельной функцией, потому что разбор нужен дважды: разговор сперва решает,
+    ответ ли это вообще, и только потом вписывает оценку в день. Пока «ответ или
+    нет» решалось по тому, изменилось ли значение, ответ «3» на «тревога
+    какая-то» (правила и сами ставят там 3.0) не засчитывался, и вопрос
+    задавался снова и снова.
+    """
+    from .extract import SCORE_NUMBER, RuleExtractor, _WORD_NUMBERS, _word_score
+
+    metric = metric_of(question)
     if not metric:
-        return record
+        return None
 
-    value = None
     lowered = answer.lower().strip()
 
     if metric == "качество сна":
-        parsed = RuleExtractor().extract(f"спал {lowered}", record.day)
-        value = parsed.metric("качество сна")
+        hours = RuleExtractor().extract(f"спал {lowered}", day).metric("качество сна")
+        if hours is not None:
+            return hours
 
-    if value is None:
-        number = re.search(r"\b(10|\d)\b", lowered)
-        if number:
-            value = float(number.group(1))
+    number = SCORE_NUMBER.search(lowered)
+    if number:
+        return float(number.group(1))
 
-    if value is None:
-        value = _word_score(lowered)
+    # «ноль», «восемь» - такой же ответ на «от 0 до 10», только цифры в нём нет.
+    # Числа больше десятки по шкале не бывают: это уже про что-то своё.
+    for word, value in _WORD_NUMBERS.items():
+        if value <= 10 and re.search(rf"\b{word}\b", lowered):
+            return float(value)
 
-    if value is None:
+    return _word_score(lowered)
+
+
+# Показатели, о которых человек говорит в обратную сторону. Внутри программы
+# шкала одна - больше значит лучше самочувствие. Но спрашиваем мы «насколько
+# СИЛЬНОЙ была тревога», и человек отвечает «на 8», имея в виду сильную тревогу,
+# то есть плохой день. Без переворота это записывалось как спокойный день, и все
+# выводы по тревоге выходили наизнанку.
+ASKED_INVERTED = {"тревога", "головная боль", "стресс"}
+
+
+def as_stored(metric: str, told: float) -> float:
+    """Оценка человека - во внутреннюю шкалу «больше значит лучше»."""
+    return round(10 - told, 1) if metric in ASKED_INVERTED else told
+
+
+def as_told(metric: str, stored: float) -> float:
+    """Обратно: внутреннее значение - в то, как об этом говорит человек."""
+    return round(10 - stored, 1) if metric in ASKED_INVERTED else stored
+
+
+def apply_answer(record: DayRecord, question: str, answer: str) -> DayRecord:
+    """Разобрать ответ на уточняющий вопрос и дописать его в тот же день."""
+    metric = metric_of(question)
+    value = score_in(question, answer, record.day)
+    if not metric or value is None:
         return record
 
+    value = as_stored(metric, max(0.0, min(10.0, value)))
     record.facts = [f for f in record.facts if not (f.kind == "metric" and f.name == metric)]
     record.add(Fact("metric", metric, max(0.0, min(10.0, value)), "diary", quote=answer))
     return record
