@@ -227,6 +227,24 @@ def step(diary: Diary, text: str, ring: dict | None = None,
          origin: str = "page", links_from_demo: bool = False,
          hints: list[Link] | None = None) -> list[dict]:
     """
+    Шаг разговора и запись дневника на диск.
+
+    Сохранение стоит здесь, а не у того, кто зовёт шаг: выходов из шага с
+    десяток (вопрос задан, итог подведён, фраза не понята), и любой забытый
+    означал бы потерянную запись. Запись дешёвая - на диск уходит только
+    изменившийся день, - поэтому лишний вызов ничего не стоит.
+    """
+    said = _step(diary, text, ring=ring, links=links, parser=parser, origin=origin,
+                 links_from_demo=links_from_demo, hints=hints)
+    diary.save()
+    return said
+
+
+def _step(diary: Diary, text: str, ring: dict | None = None,
+          links: list[Link] | None = None, parser: Parser | None = None,
+          origin: str = "page", links_from_demo: bool = False,
+          hints: list[Link] | None = None) -> list[dict]:
+    """
     Один шаг разговора. Дописывает в ленту дневника сказанное человеком и ответ,
     возвращает только новые сообщения.
 

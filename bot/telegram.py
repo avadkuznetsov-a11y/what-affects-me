@@ -30,6 +30,8 @@ from datetime import date, datetime
 
 from wam import dialog
 from wam.diary import DiaryStore, looks_like_code
+from wam.llm import ssl_context
+from wam.storage import DIARY_FILE
 from wam.habits import wrote_that_day
 from wam.phrases import say
 from wam.voice import SaluteSpeech, transcribe_voice
@@ -44,21 +46,36 @@ MAX_FILE = 20 * 1024 * 1024      # больше Telegram и не отдаёт, �
 # Проверяем форму до обращения к сети, чтобы не гонять запрос впустую.
 TOKEN_SHAPE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
+# Первое сообщение человек читает один раз и по диагонали. Раньше здесь была
+# простыня в семь абзацев - половину её никто не дочитывал. Оставили суть:
+# что делать прямо сейчас и один пример. Остальное - в /помощь.
+HELLO = (
+    "Привет, я Мира. Расскажу, что на вас влияет - по вашим же записям.\n\n"
+    "Напишите или наговорите, как прошёл день. Например:\n"
+    "«пил кофе часов в пять, спал часов пять, с утра тревога».\n\n"
+    "Что ещё умею - /помощь"
+)
+
 HELP = (
-    "Привет, я Мира - дневник, который ищет причины.\n\n"
-    "Расскажите, как прошёл день - обычными словами или голосовым.\n\n"
-    "Например: «пил кофе часов в пять, спал часов пять, с утра тревога».\n\n"
-    "Я запомню, что было и как вы себя чувствовали. Когда наберётся достаточно "
-    "дней, скажу, что на вас влияет.\n\n"
-    "Если у вас открыта страница Миры, пришлите мне код привязки с неё - "
-    "и записи из чата и со страницы будут в одном дневнике.\n\n"
-    f"Вечером, около {DEFAULT_TIME}, я напомню записать день - но только если вы "
-    "сегодня ничего не написали.\n\n"
+    "Пишите про день обычными словами или голосовым - я разберу сам.\n\n"
+    "Когда наберётся достаточно дней, скажу, что на вас влияет: не советом из "
+    "интернета, а по вашим записям.\n\n"
+    "Если открыта страница Миры, пришлите код привязки с неё - и чат со "
+    "страницей будут вести один дневник.\n\n"
+    f"Вечером, около {DEFAULT_TIME}, напомню записать день, если вы сегодня "
+    "ничего не написали.\n\n"
     "/итоги - что уже известно\n"
-    "/напоминание - во сколько напоминать (например: /напоминание 20:30, "
-    "/напоминание выкл)\n"
+    "/напоминание 20:30 - во сколько напоминать, /напоминание выкл\n"
     "/помощь - это сообщение"
 )
+
+# Команды, которые Telegram показывает подсказкой у поля ввода. Без этого
+# человек про них не знает: обработчики есть, а меню пустое.
+COMMANDS = [
+    {"command": "итоги", "description": "что уже известно"},
+    {"command": "напоминание", "description": "во сколько напоминать"},
+    {"command": "помощь", "description": "что я умею"},
+]
 
 # Как выключить и включить напоминания словом, а не временем.
 REMINDER_OFF = ("выкл", "выключить", "отключить", "не надо", "off", "нет")
@@ -99,7 +116,8 @@ class TelegramBot:
         data = urllib.parse.urlencode(params).encode()
         try:
             with urllib.request.urlopen(urllib.request.Request(url, data=data),
-                                        timeout=self.timeout + 5) as r:
+                                        timeout=self.timeout + 5,
+                                        context=ssl_context()) as r:
                 payload = json.loads(r.read())
         except urllib.error.HTTPError as exc:
             body = ""
@@ -120,7 +138,21 @@ class TelegramBot:
 
     def username(self) -> str:
         """Имя бота по токену. Заодно проверка, что токен рабочий."""
-        return self._call("getMe")["result"].get("username", "")
+        name = self._call("getMe")["result"].get("username", "")
+        self.publish_commands()
+        return name
+
+    def publish_commands(self) -> None:
+        """
+        Показать команды в меню у поля ввода. Обработчики без этого работают,
+        но человек про команды не знает: их негде увидеть.
+
+        Отказ не важен: команды - удобство, а не работа бота.
+        """
+        try:
+            self._call("setMyCommands", commands=json.dumps(COMMANDS, ensure_ascii=False))
+        except Exception:
+            pass
 
     def send(self, chat_id: int, text: str) -> None:
         self._call("sendMessage", chat_id=chat_id, text=text)
@@ -129,7 +161,7 @@ class TelegramBot:
         info = self._call("getFile", file_id=file_id)
         path = info["result"]["file_path"]
         with urllib.request.urlopen(f"{API}/file/bot{self.token}/{path}",
-                                    timeout=self.timeout) as r:
+                                    timeout=self.timeout, context=ssl_context()) as r:
             return r.read(MAX_FILE)
 
     # ── обработка сообщений ───────────────────────────────────────────────
@@ -143,7 +175,9 @@ class TelegramBot:
         # некому и незачем.
         self.reminders.remember(chat_id)
 
-        if text.startswith("/start") or text.startswith("/помощь") or text.startswith("/help"):
+        if text.startswith("/start"):
+            return HELLO
+        if text.startswith("/помощь") or text.startswith("/help"):
             return HELP
         if text.startswith("/итоги") or text.startswith("/summary"):
             return self.summary(chat_id)
@@ -360,7 +394,11 @@ class TelegramBot:
 
 
 def main() -> None:
-    bot = TelegramBot(store=DiaryStore(), parser=dialog.default_parser())
+    # Тот же файл дневника, что и у страницы: бот и страница - две двери в одни
+    # и те же записи. Запускать бота отдельно от страницы имеет смысл, только
+    # если страница не работает: два процесса на один файл будут затирать друг
+    # другу дни, каждый своей памятью.
+    bot = TelegramBot(store=DiaryStore(DIARY_FILE), parser=dialog.default_parser())
     print("Бот запущен. Напишите ему в Telegram. Остановить: Ctrl+C")
     bot.run()
 

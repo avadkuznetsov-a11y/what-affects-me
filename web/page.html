@@ -122,8 +122,18 @@
     строку с подписью состояния, «сон, стресс, шаги» рвалось посередине. */
  .card em{flex:1 1 100%;order:3;font-style:normal;font-size:13px;color:var(--soft);
   margin-top:2px}
- .card.chat{justify-content:space-between;color:var(--ink);gap:10px}
+ /* Привязанный чат: строка с кнопкой в ряд. Рамка вокруг одного чата с
+    кнопкой внутри читалась как отдельный блок ни о чём. */
+ #tg-chats{display:flex;flex-direction:column;gap:6px;margin:8px 0}
+ .card.chat{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:7px 0;border:0;color:var(--ink);font-size:13.5px}
  .card.chat::before{display:none}
+ .card.chat button{padding:5px 10px;font-size:12.5px}
+ /* Подробности про напоминания - за раскрывашкой: на странице они не работают,
+    а место занимали абзацем. */
+ .tg-more{font-size:13px;margin-top:4px}
+ .tg-more summary{color:var(--soft);cursor:pointer}
+ .tg-more .hint{margin-top:6px}
 
  /* ── Панель источников ────────────────────────────────────────────────
     Источник - строка, настройки раскрываются по клику. Разом развёрнутые поля
@@ -365,17 +375,21 @@
             <p class="hint" id="tg-code-note">Код срабатывает один раз и живёт четверть часа.</p>
             <div class="row"><button class="small ghost" onclick="newCode()">Показать новый код</button></div>
           </div>
-          <div id="tg-linked" class="stack" hidden>
-            <p class="ok">Чат привязан. Всё, что вы пишете боту, появляется в ленте слева с пометкой.</p>
+          <div id="tg-linked" hidden>
+            <p class="ok">Чат привязан - записи из него видны в ленте слева.</p>
+            <!-- Список чатов: строка с кнопкой в ряд, а не рамка с кнопкой внутри.
+                 Рамка вокруг одного чата выглядела как отдельный блок ни о чём. -->
             <div id="tg-chats"></div>
-            <p class="hint">Отвязать - значит закрыть чату доступ к дневнику. Записи остаются здесь.</p>
-          <!-- Напоминание на странице бессмысленно: она либо открыта, либо закрыта.
-               Работают они в чате, и сказать об этом надо там, где человек его подключил. -->
-          <p class="hint">Вечером бот напомнит записать день - но только если за день от вас
-            ничего не было. Время меняется в чате командой «/напоминание 20:30», выключается
-            командой «/напоминание выкл».</p>
+            <p class="hint">Отвязать - закрыть чату доступ. Записи остаются здесь.</p>
           </div>
           <div class="row"><button class="small ghost" onclick="disconnect()">Отключить</button></div>
+          <!-- Напоминания работают в чате, и сказать про них надо там, где человек
+               его подключил. На странице они бессмысленны: она либо открыта, либо нет. -->
+          <details class="tg-more">
+            <summary>Напоминания</summary>
+            <p class="hint">Вечером бот напомнит записать день, если за день от вас ничего
+              не было. В чате: «/напоминание 20:30» или «/напоминание выкл».</p>
+          </details>
         </div>
         <p class="warn" id="tg-error" hidden></p>
       </div>

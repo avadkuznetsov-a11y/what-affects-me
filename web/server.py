@@ -23,6 +23,7 @@ from demo.generate import build
 from wam import dialog, food, weather
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
+from wam.storage import DIARY_FILE
 from wam.experiments import Experiment, can_try, evaluate
 from wam.insights import find_links
 from wam.llm import available_engine
@@ -51,8 +52,9 @@ ENGINE_NAME, _COMPLETE = available_engine()
 PARSER = dialog.Parser(ENGINE_NAME, _COMPLETE)
 
 # Дневник один на процесс: то, что человек написал боту в Telegram, видно на
-# странице, и наоборот.
-STORE = DiaryStore()
+# странице, и наоборот. Лежит он в файле рядом с программой и переживает
+# перезапуск - человек ведёт дневник неделями.
+STORE = DiaryStore(DIARY_FILE)
 
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
 MAX_BODY = 64 * 1024
@@ -326,33 +328,43 @@ def _set_city(value) -> dict:
     diary = STORE.get(WEB_KEY)
     with diary.lock:
         diary.city = city
-    _remember_city(city)
+    # Город человек называет один раз, спрашивать снова после перезапуска
+    # незачем. Отдельного файла под него больше нет: он лежит в дневнике, там
+    # же, где записи, - два разных хранилища на одну программу ни к чему.
+    diary.save()
     return {"ok": True, "city": city, "known": found}
 
 
-# Записи дневника живут в памяти процесса - для прототипа этого достаточно.
-# А вот город терять на каждом перезапуске обидно: человек называет его один
-# раз, и это не личная запись, а настройка. Держим её рядом с программой.
+# Город раньше лежал отдельным файлом рядом со страницей. Теперь он живёт в
+# дневнике, вместе с записями: два разных хранилища на одну программу ни к чему.
+# Но у того, кто запускал прототип до переезда, старый файл на диске остался, и
+# названный им город терять нельзя - переносим его один раз при запуске.
 CITY_FILE = Path(__file__).parent / ".city"
 
 
-def _remember_city(city: str) -> None:
-    """Запомнить город между запусками. Не вышло - молча живём дальше."""
+def _move_city_from_file() -> None:
+    """
+    Перенести город из старого файла в дневник. Файл убираем только после того,
+    как хранилище подтвердило запись: иначе одна неудача на диске стирает
+    единственное место, где город ещё был.
+    """
+    if not CITY_FILE.exists():
+        return
     try:
-        if city:
-            CITY_FILE.write_text(city, encoding="utf-8")
-        elif CITY_FILE.exists():
-            CITY_FILE.unlink()
+        city = CITY_FILE.read_text(encoding="utf-8").strip()[:MAX_CITY]
+    except OSError:
+        return                      # прочитать не вышло - пусть лежит дальше
+    diary = STORE.get(WEB_KEY)
+    if city and not diary.city:
+        with diary.lock:
+            diary.city = city
+        if not diary.save():
+            return
+        print(f"Город «{city}» перенесён из web/.city в дневник.")
+    try:
+        CITY_FILE.unlink()
     except OSError:
         pass
-
-
-def _recall_city() -> str:
-    """Город с прошлого запуска. Пусто - его просто ещё не называли."""
-    try:
-        return CITY_FILE.read_text(encoding="utf-8").strip()[:MAX_CITY]
-    except OSError:
-        return ""
 
 
 def _weather_today() -> dict:
@@ -429,6 +441,9 @@ def _food_step(payload: dict, since: int = 0) -> dict:
                             f"с {first.isoformat()} по {last.isoformat()}")
         diary.say("bot", "Записал. Числа стали факторами дня наравне с привычками.",
                   note=_food_note(by_day))
+        # Выгрузка КБЖУ идёт мимо разговора, поэтому и на диск её кладём здесь:
+        # в `dialog.step` этот путь не заходит.
+        diary.save()
         # Число дней словами считает программа, а не страница: «2 дней» на ней
         # уже выходило, а правил склонения в javascript нет.
         return {"ok": True, "days": len(by_day), "told": days_count(len(by_day)),
@@ -793,11 +808,9 @@ def _checked(payload: dict) -> tuple[str, dict | None, int, int]:
 
 
 def main() -> None:
-    # Город с прошлого запуска: человек назвал его один раз, спрашивать снова
-    # после каждого перезапуска незачем.
-    saved = _recall_city()
-    if saved:
-        STORE.get(WEB_KEY).city = saved
+    # Перенос старого города делаем при запуске программы, а не при импорте:
+    # модуль импортируют и тесты, а трогать файлы человека они не должны.
+    _move_city_from_file()
     threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")

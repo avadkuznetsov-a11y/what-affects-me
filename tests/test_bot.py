@@ -47,7 +47,9 @@ def test_username_comes_from_getme_without_showing_token():
 
     bot._call = fake_call
     assert bot.username() == "mira_test_bot"
-    assert seen == ["getMe"]
+    # Следом уходит setMyCommands: команды в меню публикуются при подключении,
+    # иначе человек про них не знает - обработчики есть, а меню пустое.
+    assert seen == ["getMe", "setMyCommands"]
 
 
 def test_error_text_never_shows_the_token():

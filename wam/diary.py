@@ -5,27 +5,35 @@
 что-то в Telegram - факты попали в тот же дневник, который открыт на странице,
 и наоборот. Поэтому запись живёт не внутри веб-сессии и не внутри бота, а здесь.
 
-Всё в памяти процесса: перезапустили - записи начинаются заново. Для прототипа
-этого достаточно, база появится вместе с личным кабинетом.
+Записи и привязка чатов переживают перезапуск: их держит `wam/storage.py`.
+Разговор - лента сообщений, заданный вопрос, коды привязки - живёт только в
+памяти процесса и после перезапуска начинается заново. Хранилище без файла
+(`DiaryStore()` без пути) работает как раньше, целиком в памяти: так устроены
+тесты, чтобы они не писали в настоящий дневник человека.
 
 Про замки. У хранилища один замок на всю раскладку дневников и коды, у каждого
 дневника свой - на один шаг разговора. Правило простое и его нельзя нарушать:
 под замком не делаем сетевых вызовов. Ни запроса к модели, ни отправки в
 Telegram - иначе один медленный ответ сервиса останавливает всех остальных.
+Запись на диск под замком - можно: она короткая (один изменившийся день) и
+никуда не ходит.
 """
 from __future__ import annotations
 
 import random
 import re
+import sqlite3
 import threading
 import time
 from datetime import date
+from pathlib import Path
 
 from .derive import derive_factors
 from .habits import imply_absences
 from .insights import (OBSERVATION_MIN_DAYS, OBSERVATION_PERMUTATIONS, Link,
                        find_links)
 from .schema import DayRecord, Timeline
+from .storage import Storage
 
 # Код привязки живёт недолго: это пароль к дневнику, произнесённый вслух.
 CODE_LIFETIME = 15 * 60
@@ -63,8 +71,11 @@ class Diary:
     сообщений для показа на странице.
     """
 
-    def __init__(self, key: str) -> None:
+    def __init__(self, key: str, storage: Storage | None = None) -> None:
         self.key = key
+        # Куда дневник сохраняется. Без хранилища он живёт только в памяти -
+        # так работают тесты и так работал весь прототип до появления файла.
+        self._storage = storage
         self.timeline = Timeline()
         # Город человека - всё, что нужно для погоды. Пустой город - погоды
         # просто нет, и дневник работает как раньше.
@@ -122,6 +133,24 @@ class Diary:
                     existing.add(fact)
                 return
         self.timeline.add(record)
+
+    def save(self) -> bool:
+        """
+        Сохранить записи и город. Звать надо после каждого шага, который что-то
+        дописал в дневник: разговор человек может прервать в любой момент, а
+        того, что не записано на диск, после перезапуска не существует.
+
+        Дёшево: хранилище сравнивает дни со слепком прошлой записи и трогает
+        только изменившийся день, поэтому лишний вызов ничего не стоит.
+
+        Отвечает, лежит ли дневник на диске. Дневник без файла отвечает «нет»:
+        он и не должен ничего сохранять, но и делать вид, что сохранил, ему
+        нельзя - на этот ответ смотрят перед тем, как удалить старые данные.
+        """
+        if self._storage is None:
+            return False
+        with self.lock:
+            return self._storage.save_diary(self.key, self.city, self.timeline.days)
 
     # ── вопрос, который ждёт ответа ───────────────────────────────────────
     def expect(self, question: str, day: date) -> None:
@@ -236,6 +265,9 @@ class Diary:
             self.messages = []
             self._links_version = None
             self._hints_version = None
+            # Сегодняшний день ушёл и из файла тоже: иначе после перезапуска
+            # он вернулся бы, и кнопка «начать заново» ничего бы не значила.
+            self.save()
 
 
 class DiaryStore:
@@ -244,9 +276,13 @@ class DiaryStore:
 
     Ключ дневника - строка: у страницы это "web", у непривязанного чата
     "tg:<chat_id>". Код привязки одноразовый и живёт четверть часа.
+
+    `path` - файл, в котором дневники живут между запусками. Без него хранилище
+    работает целиком в памяти: так его заводят тесты, и настоящий дневник
+    человека они не трогают.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, path: Path | str | None = None) -> None:
         self._lock = threading.RLock()
         self._diaries: dict[str, Diary] = {}
         self._codes: dict[str, tuple[str, float]] = {}     # код -> (ключ, когда выдан)
@@ -254,13 +290,49 @@ class DiaryStore:
         self._misses: dict[int, tuple[int, float]] = {}    # чат -> (промахи, до когда молчим)
         self._misses_total = 0
         self._guests: dict[str, float] = {}                # дневник чата -> когда о нём вспоминали
+        self._storage = self._open(path)
+        if self._storage is not None:
+            self._restore()
+
+    @staticmethod
+    def _open(path: Path | str | None) -> Storage | None:
+        """
+        Открыть файл дневника. Не вышло совсем - работаем в памяти: человек
+        потеряет записи при перезапуске, но хотя бы сможет писать сегодня.
+        Запуск с чистого листа, когда файла ещё нет, - это не «не вышло»,
+        хранилище заводит файл само.
+        """
+        if path is None:
+            return None
+        try:
+            return Storage(path)
+        except (OSError, sqlite3.Error) as exc:
+            print(f"Дневник на диске недоступен ({exc}). Записи будут жить "
+                  "только до конца работы программы.")
+            return None
+
+    def _restore(self) -> None:
+        """Поднять записи и привязки чатов с прошлого запуска."""
+        saved = self._storage.load()
+        for key, timeline in saved.timelines.items():
+            diary = self.get(key)
+            diary.timeline = timeline
+        for key, city in saved.cities.items():
+            self.get(key).city = city
+        self._chats.update(saved.chats)
+        # Дневники чатов, которые так и не привязали: срок жизни у них тот же,
+        # что и был, поэтому вспоминаем, когда в них писали в последний раз.
+        bound = set(self._chats.values())
+        self._guests.update({key: seen for key, seen in saved.seen.items()
+                             if key.startswith("tg:") and key not in bound})
+        self._forget_guests()
 
     def get(self, key: str) -> Diary:
         """Дневник по ключу; один ключ - всегда один и тот же дневник."""
         with self._lock:
             diary = self._diaries.get(key)
             if diary is None:
-                diary = Diary(key)
+                diary = Diary(key, self._storage)
                 self._diaries[key] = diary
             return diary
 
@@ -301,6 +373,10 @@ class DiaryStore:
             self._misses_total = 0
             self._move_days(self._chats.get(chat_id) or f"tg:{chat_id}", key)
             self._chats[chat_id] = key
+            # Привязку тоже храним: после перезапуска человек в том же чате
+            # должен остаться собой, а не начать писать в чужой пустой дневник.
+            if self._storage is not None:
+                self._storage.set_chat(chat_id, key)
             return key
 
     def code_is_live(self, code: str) -> bool:
@@ -328,6 +404,8 @@ class DiaryStore:
             chats = self.linked_chats(key)
             for chat in chats:
                 del self._chats[chat]
+                if self._storage is not None:
+                    self._storage.drop_chat(chat)
             self._codes = {code: value for code, value in self._codes.items()
                            if value[0] != key}
             return chats
@@ -345,6 +423,8 @@ class DiaryStore:
             if self._chats.get(chat_id) != key:
                 return False
             del self._chats[chat_id]
+            if self._storage is not None:
+                self._storage.drop_chat(chat_id)
             return True
 
     def key_for_chat(self, chat_id: int) -> str:
@@ -393,6 +473,11 @@ class DiaryStore:
         with target.lock, old.lock:
             for record in old.timeline.days:
                 target.add(record)
+            target.save()
+        # Прежний дневник чата уехал целиком - в файле ему делать нечего,
+        # иначе после перезапуска записи снова раздвоятся.
+        if self._storage is not None:
+            self._storage.drop_diary(from_key)
 
     def _forget_guests(self) -> None:
         """Дневники непривязанных чатов: старые и лишние выкидываем."""
@@ -406,6 +491,8 @@ class DiaryStore:
         for key in drop:
             self._guests.pop(key, None)
             self._diaries.pop(key, None)
+            if self._storage is not None:
+                self._storage.drop_diary(key)
 
     def _forget_stale(self) -> None:
         deadline = time.time() - CODE_LIFETIME

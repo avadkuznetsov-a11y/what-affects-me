@@ -14,7 +14,8 @@ import web.server as server
 from demo.generate import build
 from wam import dialog, weather
 from wam.derive import derive_factors
-from wam.diary import CODE_TRIES_TOTAL, Diary
+from wam.diary import CODE_TRIES_TOTAL, Diary, DiaryStore
+from wam.storage import DIARY_FILE
 
 FAKE_TOKEN = "7654321:" + "xxx-not-a-real-token" * 2
 
@@ -489,6 +490,45 @@ def test_weather_without_network_is_empty_and_not_an_error(monkeypatch, site, sk
 def test_weather_needs_post(site, sky):
     """Запрос ходит в сеть, значит чужая страница не должна звать его картинкой."""
     assert _fetch(site + "/weather")[0] == 404
+
+
+def test_a_named_city_survives_a_restart(monkeypatch, site, sky):
+    """Погоду человек настраивает один раз, а не после каждого перезапуска."""
+    monkeypatch.setattr(weather, "_get", lambda *args, **kwargs: None)
+    assert json.loads(_fetch(site + "/city", {"city": "Москва"})[1])["ok"] is True
+
+    # Перезапуск - это новое хранилище на тот же файл
+    again = DiaryStore(DIARY_FILE)
+    assert again.get(server.WEB_KEY).city == "Москва"
+
+
+def test_the_city_moves_out_of_the_old_file(monkeypatch, tmp_path, sky):
+    """
+    Город раньше лежал отдельным файлом. У того, кто запускал прототип до
+    переезда, он остался на диске - и потерять его нельзя.
+    """
+    old = tmp_path / ".city"
+    old.write_text("Казань", encoding="utf-8")
+    monkeypatch.setattr(server, "CITY_FILE", old)
+
+    server._move_city_from_file()
+
+    assert server.STORE.get(server.WEB_KEY).city == "Казань"
+    assert not old.exists()          # перенесли - файл больше не нужен
+    again = DiaryStore(DIARY_FILE)
+    assert again.get(server.WEB_KEY).city == "Казань"
+
+
+def test_the_old_city_file_is_kept_when_saving_failed(monkeypatch, tmp_path, sky):
+    """Пока город не записан, старый файл - единственное место, где он есть."""
+    old = tmp_path / ".city"
+    old.write_text("Казань", encoding="utf-8")
+    monkeypatch.setattr(server, "CITY_FILE", old)
+    monkeypatch.setattr(server.STORE.get(server.WEB_KEY), "save", lambda: False)
+
+    server._move_city_from_file()
+
+    assert old.exists() and old.read_text(encoding="utf-8") == "Казань"
 
 
 def test_state_says_which_weather_service_works(monkeypatch, site):
