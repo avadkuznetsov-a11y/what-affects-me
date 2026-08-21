@@ -441,6 +441,47 @@ function drawSources(){
   drawWeatherRow();
 }
 
+// Что погода дала сегодня. Без этого источник работает молча: факторы ложатся
+// в дневник, а человек не видит ни цифр, ни того, сработало ли хоть что-нибудь.
+async function showWeather(){
+  const box = document.getElementById('weather-today');
+  if(!box) return;
+  if(!city){ box.hidden = true; return; }
+  let answer;
+  try { answer = await talk('/weather', {}); } catch(e) { box.hidden = true; return; }
+  if(!answer.day){ box.hidden = true; return; }
+
+  box.innerHTML = '';
+  const shown = [];
+  const t = answer.today || {}, d = answer.change || {};
+  if(t['давление'] !== undefined){
+    // Перепад важнее самой цифры: именно он становится фактором дня
+    const jump = d['давление'];
+    shown.push('давление ' + Math.round(t['давление']) + ' гПа'
+      + (jump === undefined ? '' : ' (' + (jump > 0 ? '+' : '') + jump.toFixed(1) + ' к вчера)'));
+  }
+  if(t['температура днём'] !== undefined) shown.push(Math.round(t['температура днём']) + '°');
+  if(t['облачность'] !== undefined) shown.push('облачность ' + Math.round(t['облачность']) + '%');
+
+  const head = document.createElement('div');
+  head.append(document.createTextNode('Сегодня: '));
+  const values = document.createElement('b');
+  values.textContent = shown.join(', ');
+  head.appendChild(values);
+  box.appendChild(head);
+
+  const line = document.createElement('div');
+  if((answer.factors || []).length){
+    line.className = 'got';
+    line.textContent = 'Факторы дня: ' + answer.factors.join(', ');
+  } else {
+    line.className = 'plain';
+    line.textContent = 'Обычный день - факторов погоды нет.';
+  }
+  box.appendChild(line);
+  box.hidden = false;
+}
+
 // Строка погоды живёт в разметке, а состояние у неё меняется: пока города нет,
 // источник и правда не работает, и показывать его подключённым было бы неправдой.
 function drawWeatherRow(){
