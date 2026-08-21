@@ -366,3 +366,91 @@ def test_answer_with_a_day_inside_stays_todays_answer():
     _step(diary, "Тревога какая-то")
     _step(diary, "на 7, но это скорее из-за того что вчера лёг рано")
     assert diary.today().metric("тревога") is not None
+
+
+# ── тяжёлые дни, вопросы к программе, поправки ────────────────────────────
+#
+# Всё это проверено живыми диалогами: на каждой строке ниже бот раньше отвечал
+# так, что дневник хотелось закрыть.
+
+def test_heavy_day_gets_condolences_not_a_question():
+    diary = DiaryStore().get("web")
+    messages = _step(diary, "у меня умер дедушка, весь день на похоронах")
+
+    said = [m for m in messages if m["kind"] == "bot"]
+    assert said and said[0]["text"] == dialog.HEAVY_REPLY
+    assert not [m for m in messages if m["kind"] == "ask"]   # ни о чём не спрашиваем
+    assert diary.today().factor("тяжёлое событие") == 1.0
+
+
+def test_heavy_words_do_not_catch_ordinary_speech():
+    """«Умеренно» и «сократили расходы» тяжёлым днём не считаются."""
+    diary = DiaryStore().get("web")
+    _step(diary, "пил умеренно, два бокала вина")
+    assert diary.today().factor("тяжёлое событие") is None
+
+
+def test_medical_question_gets_an_answer_even_with_facts():
+    diary = DiaryStore().get("web")
+    messages = _step(diary, "третий день болит голова, что мне выпить?")
+
+    texts = [m["text"] for m in messages]
+    assert dialog.MEDICAL_REPLY in texts
+    assert diary.today().metric("головная боль") is not None
+
+
+def test_question_to_us_is_not_an_answer_to_our_question():
+    """«Что ты про меня знаешь?» - вопрос, а не ответ про количество."""
+    diary = DiaryStore().get("web")
+    _step(diary, "вечером выпил пива")
+    messages = _step(diary, "что ты вообще про меня знаешь?")
+
+    said = " ".join(m["text"] for m in messages if m["kind"] == "bot")
+    assert "Дней в дневнике" in said
+    assert "Записал" not in said
+
+
+def test_annoyed_person_is_not_asked_again_today():
+    diary = DiaryStore().get("web")
+    _step(diary, "да достал ты со своими вопросами")
+    messages = _step(diary, "пил кофе, спал часов пять")
+
+    assert not [m for m in messages if m["kind"] == "ask"]
+    assert diary.today().factor("кофе") == 1.0      # записываем всё равно
+
+
+def test_privacy_and_delete_questions_are_answered():
+    diary = DiaryStore().get("web")
+    privacy = _step(diary, "а ты мои данные кому-нибудь передаёшь?")
+    delete = _step(diary, "удали всё что записал")
+
+    assert dialog.PRIVACY_REPLY in [m["text"] for m in privacy]
+    assert dialog.DELETE_REPLY in [m["text"] for m in delete]
+
+
+def test_doubt_about_method_is_answered():
+    diary = DiaryStore().get("web")
+    messages = _step(diary, "откуда ты знаешь что кофе виноват? может это совпадение")
+
+    assert dialog.HOW_SURE_REPLY in [m["text"] for m in messages]
+    assert diary.today().factor("кофе") is None     # это вопрос, а не запись дня
+
+
+def test_bare_score_without_pending_question_asks_what_about():
+    diary = DiaryStore().get("web")
+    messages = _step(diary, "на 4")
+    assert dialog.WHICH_METRIC in [m["text"] for m in messages]
+
+
+def test_wrong_day_moves_the_record():
+    diary = DiaryStore().get("web")
+    today = date.today()
+    _step(diary, "вчера был перелёт")
+    assert diary.record_for(today - timedelta(days=1)).factor("перелёт") == 1.0
+
+    messages = _step(diary, "а нет, вру, это было позавчера")
+
+    said = " ".join(m["text"] for m in messages if m["kind"] == "bot")
+    assert "Поправил" in said
+    assert diary.record_for(today - timedelta(days=2)).factor("перелёт") == 1.0
+    assert (today - timedelta(days=1)) not in [d.day for d in diary.timeline.days]

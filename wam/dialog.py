@@ -17,8 +17,8 @@ from datetime import date, timedelta
 
 from .derive import DEVICE_SOURCES, derive_factors
 from .diary import Diary
-from .extract import (LLMExtractor, RuleExtractor, day_mentioned,
-                      measured_number)
+from .extract import (HEAVY_WORDS as _HEAVY_WORDS, LLMExtractor, RuleExtractor,
+                      day_mentioned, measured_number)
 from .habits import missed_days
 from .insights import Link
 from .llm import available_engine
@@ -159,7 +159,7 @@ class Parser:
         engine, complete = available_engine()
         return cls(engine, complete)
 
-    def parse(self, text: str, day: date) -> DayRecord:
+    def parse(self, text: str, day: date, context: str = "") -> DayRecord:
         """
         Модель и правила дополняют друг друга, а не заменяют.
 
@@ -174,7 +174,7 @@ class Parser:
             return by_rules
 
         try:
-            record = self.model.extract(text, day)
+            record = self.model.extract(text, day, context)
         except Exception:
             return by_rules
         if not record.facts:
@@ -200,8 +200,25 @@ def default_parser() -> Parser:
     return _DEFAULT
 
 
-def parse_day(text: str, day: date, parser: Parser | None = None) -> DayRecord:
-    return (parser or default_parser()).parse(text, day)
+# Сколько последних реплик разговора показываем модели как контекст. Две -
+# это «что человек сказал» и «что мы ответили»: ровно то, к чему относится
+# поправка вроде «нет, вру» или «а вообще ближе к шести». Больше не нужно:
+# дальше начинается вчерашний день, и модель начнёт записывать его заново.
+CONTEXT_MESSAGES = 4
+
+
+def _recent(diary: Diary) -> str:
+    """Последние реплики разговора одной строкой - контекст для разбора."""
+    lines = []
+    for message in diary.messages[-CONTEXT_MESSAGES:]:
+        who = "Человек" if message["kind"] == "me" else "Дневник"
+        lines.append(f"{who}: {message['text']}")
+    return "\n".join(lines)
+
+
+def parse_day(text: str, day: date, parser: Parser | None = None,
+              context: str = "") -> DayRecord:
+    return (parser or default_parser()).parse(text, day, context)
 
 
 # Внутри программы шкала одна: больше - лучше самочувствие, поэтому стресс
@@ -294,7 +311,7 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
     нельзя, иначе один медленный ответ останавливает и страницу, и бота.
     """
     links = links or []
-    parsed = parse_day(text, date.today(), parser)
+    parsed = parse_day(text, date.today(), parser, context=_recent(diary))
     # Города нет - вернётся пустота, и погода в разговоре просто не участвует
     sky = weather.readings(diary.city)
 
@@ -326,12 +343,32 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
 
         diary.say("me", text, origin=origin)
 
+        # Поправка дня - до всякого разбора: «а нет, вру, это был вторник» не
+        # рассказ, а перенос уже записанного. Разбирать её как рассказ значило
+        # бы записать вторник заново и оставить ошибку в прежнем дне.
+        if _WRONG_DAY.search(text.lower()):
+            other = day_mentioned(text, now, anywhere=True)
+            if other is not None:
+                moved = _move_day(diary, other, now, origin, before_seq)
+                if moved:
+                    return moved
+
         # Реплика бывает ответом и рассказом сразу: «на 3, вымотан после зала» -
         # это и оценка сил, и тренировка. Поэтому применяем оба разбора, а не
         # выбираем один: раньше половина сказанного пропадала, а вопрос уже
         # лежал в asked и второй раз не задавался.
-        detail = detail_of(pending) if pending else ""
-        answered = bool(pending) and _answers(record, pending, text)
+        # Вопрос к программе ответом на её же вопрос не бывает: «что ты про
+        # меня знаешь?» - это не «сколько выпили».
+        question_to_us = asks_us(text)
+        detail = "" if question_to_us else (detail_of(pending) if pending else "")
+        answered = (bool(pending) and not question_to_us
+                    and _answers(record, pending, text))
+        # Из вопроса к программе берём только самочувствие: «третий день болит
+        # голова, что выпить?» - это и жалоба, и вопрос, и терять симптом
+        # нельзя. А привычки в таком вопросе - предмет разговора, а не дело
+        # дня: «откуда ты знаешь, что кофе виноват» - не выпитый кофе.
+        if question_to_us and parsed is not None:
+            parsed.facts = [f for f in parsed.facts if f.kind == "metric"]
         added = _absorb(record, parsed)
 
         # Спросили деталь привычки («сколько чашек кофе») - ответ надо принять,
@@ -356,7 +393,7 @@ def _step(diary: Diary, text: str, ring: dict | None = None,
                 added = [f for f in added
                          if not (f.kind == "metric" and f.name == scored.name)]
                 added.append(scored)
-        elif pending and not _polite(text):
+        elif pending and not _polite(text) and not question_to_us:
             # Не признали ответом - вопрос остаётся висеть, но не вечно. Иначе
             # он пропадал насовсем: спросить второй раз мешает asked, а
             # следующая реплика проверялась уже ни против чего. Реплика «на 7,
@@ -400,6 +437,32 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
         if added or answered:
             added = added + [f for f in record.facts if f not in known]
 
+    # Тяжёлый день - горе, больница, увольнение - человек называет один раз, и
+    # бодрое «Записал! А как вы себя чувствовали? хватит пары слов» после этого
+    # перечёркивает весь дневник. Запись делаем как обычно (такие дни влияют на
+    # сон и силы сильнее любой привычки), но говорим по-человечески и ни о чём
+    # больше в эту реплику не спрашиваем: ни про меру привычки, ни про
+    # пропущенные дни, ни про выводы.
+    if _HEAVY.search(text.lower()):
+        diary.forget_question()
+        diary.wrapped_day = record.day       # итог дня тоже не нужен
+        diary.say("bot", HEAVY_REPLY, note=facts_note(added) if added else "",
+                  origin=origin)
+        return diary.feed(before_seq)
+
+    # «Третий день болит голова, что мне выпить?» - тут есть и что записать, и
+    # прямой вопрос. Записать мало: человек спросил, и молчание в ответ он
+    # читает как «меня не услышали». Поэтому запись идёт своим чередом, а
+    # ответ про лекарства - сразу за ней, и дальше в эту реплику мы уже ни о
+    # чём не спрашиваем: свой вопрос человек задал первым.
+    medical = bool(_MEDICAL.search(text.lower()))
+
+    if added:
+        # Что записала эта реплика - помним до следующей: если человек поправит
+        # день («это был вторник»), переносить надо ровно это.
+        diary.last_added = list(added)
+        diary.last_day = record.day
+
     if added:
         # Чем разобрана фраза - техническая деталь, человеку она не нужна.
         # А вот день назвать надо, если запись легла не в сегодняшний: человек
@@ -412,10 +475,28 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
         #
         # Но если человек повторил то, что уже записано, «не понял» - неправда
         # и обида: он-то сказал понятное. Так и говорим.
-        if parsed is not None and parsed.facts:
+        if parsed is not None and parsed.facts and not asks_us(text):
             diary.say("bot", ALREADY_KNOWN, origin=origin)
             return diary.feed(before_seq)
         return _small_talk(diary, text, record.day, origin, before_seq)
+
+    if medical:
+        diary.say("bot", MEDICAL_REPLY, origin=origin)
+        return diary.feed(before_seq)
+
+    if _ABOUT_ME.search(text.lower()):
+        diary.say("bot", _what_i_know(diary, record.day), origin=origin)
+        return diary.feed(before_seq)
+
+    # Сегодня человек просил не спрашивать - значит, не спрашиваем: ни про меру
+    # привычки, ни про пропущенные дни. Запись при этом идёт как обычно.
+    #
+    # Если он сам вернулся с рассказом, тишину снимаем - но со следующей
+    # реплики: спросить сразу после «ладно, ладно» значит не услышать просьбу.
+    if diary.quiet_day == record.day:
+        if added:
+            diary.quiet_day = None
+        return diary.feed(before_seq)
 
     # Про пропущенные дни спрашиваем раньше всего остального: вчерашний день
     # человек ещё помнит, а через неделю уже нет. Вопрос один и только один раз
@@ -528,6 +609,175 @@ def _wrap_up(diary: Diary, record: DayRecord, origin: str,
     return diary.feed(before_seq)
 
 
+# ── когда отвечать нельзя как обычно ──────────────────────────────────────
+
+# Тяжёлое событие. «Умер дедушка, весь день на похоронах» и в ответ бодрое
+# «Записал! А как вы себя чувствовали? хватит пары слов» - это то, после чего
+# дневник закрывают навсегда. Запись всё равно нужна: горе влияет на сон и силы
+# сильнее любого кофе. Но сказать сначала надо по-человечески.
+# Слова берём те же, по которым `extract` заводит фактор «тяжёлое событие»:
+# два своих списка неизбежно разъедутся, и тогда бот будет то записывать день
+# как тяжёлый, но отвечать бодро, то наоборот.
+_HEAVY = re.compile(_HEAVY_WORDS)
+
+HEAVY_REPLY = ("Сочувствую. Записал - такие дни на самочувствие влияют сильнее "
+               "всего остального, и это важно помнить.\n"
+               "Расскажете про день, когда будет силы, - или не рассказывайте, "
+               "я подожду.")
+
+# Вопрос про лекарства и лечение. Молчать нельзя: человек спросил прямо и
+# решит, что его не услышали. Отвечать по существу - тоже: по дневнику отличить
+# мигрень от давления, обезвоживания или недосыпа невозможно, и любой совет тут
+# будет угадыванием.
+_MEDICAL = re.compile(
+    r"что (?:мне )?(?:выпить|принять|попить)|какие таблет|какое лекарств|"
+    r"чем лечить|как лечить|что делать с (?:голов|давлен|болью)|"
+    r"мне обследоват|надо к врачу|сдать анализ|какие анализ|"
+    r"что со мной|чем я болен|это опасно")
+
+MEDICAL_REPLY = (
+    "Про лекарства и лечение я не советую - и не притворяюсь, что могу: по "
+    "записям в дневнике причину не отличить, а угадывать тут нельзя.\n"
+    "Что могу: собрать ваши записи за все дни в одну выгрузку - кнопка «Выгрузить "
+    "дневник». С ней разговор с врачом выйдет предметнее, чем «мне плохо».")
+
+# Вопрос про саму программу. «Ты живая или программа?» с ответом «не понял, что
+# записать» - худший возможный ответ: человек спросил именно потому, что
+# усомнился, и получил подтверждение худшего.
+_WHO_ARE_YOU = re.compile(
+    r"ты (?:вообще |реально |правда |что,? |сейчас )*"
+    r"(?:живая|живой|человек|бот|программа|робот|настоящ\w*|кто)|"
+    r"кто ты|это бот|с кем я говорю|ты ии|ты нейросет")
+
+WHO_REPLY = ("Программа. Речь разбирает языковая модель, а связи между вашими "
+             "днями считает обычная статистика - поэтому выводы можно проверить, "
+             "а не просто поверить.\n"
+             "Записи хранятся у вас на компьютере и никуда не уходят.")
+
+
+# Поправка дня: «а нет, вру, это был вторник», «это было вчера, не сегодня».
+# Человек не переписывает рассказ заново - он поправляет дату. Раньше такая
+# реплика уходила в «не понял», а запись оставалась висеть не в том дне и
+# портила статистику навсегда.
+_WRONG_DAY = re.compile(
+    r"^\s*(?:а\s+)?(?:нет|не)[,\s]|^\s*(?:вру|вернее|точнее|ошибся|ошиблась)|"
+    r"\bэто был[оа]?\b|\bне сегодня\b|\bперепутал")
+
+
+def _move_day(diary: Diary, to_day: date, now: date, origin: str,
+              before_seq: int) -> list[dict]:
+    """
+    Перенести прошлую запись в другой день и сказать об этом.
+
+    Переносим ровно то, что записала предыдущая реплика: остальное в том дне
+    могло быть сказано раньше и к поправке отношения не имеет.
+    """
+    was = diary.last_day
+    if was is None or was == to_day or not diary.last_added:
+        return []
+
+    source = diary.record_for(was)
+    target = diary.record_for(to_day)
+    moved = []
+    for fact in list(diary.last_added):
+        if fact in source.facts:
+            source.facts.remove(fact)
+            target.add(fact)
+            moved.append(fact)
+    if not moved:
+        return []
+
+    # Пустой день после переноса убираем: иначе в дневнике остаётся запись без
+    # единого факта, и она считается прожитым днём в статистике.
+    if not source.facts:
+        diary.timeline.days = [d for d in diary.timeline.days if d.day != was]
+
+    diary.last_day = to_day
+    diary.last_added = moved
+    diary.forget_question()
+    diary.say("bot", f"Поправил: это было {day_name(to_day, now)}.",
+              note=facts_note(moved), origin=origin)
+    return diary.feed(before_seq)
+
+
+# «Откуда ты знаешь, что кофе виноват? Может, совпадение» - это не запись дня,
+# а самый важный вопрос, который человек может задать дневнику. Отвечать надо
+# по существу: как именно считается связь и почему совпадение уже отброшено.
+_HOW_SURE = re.compile(
+    r"откуда ты (?:знаешь|взял|это)|почему ты (?:так )?(?:решил|думаешь|считаешь)|"
+    r"может (?:это )?совпадени|это совпадени|с чего ты взял|ты уверен|"
+    r"как ты (?:это )?(?:считаешь|посчитал|понял)|на чём основан|на чем основан|"
+    r"докажи|это точно")
+
+HOW_SURE_REPLY = (
+    "Справедливый вопрос. Считаю так: беру ваши дни с этой привычкой и дни без "
+    "неё и сравниваю показатель. Потом тысячу раз перемешиваю дни случайно и "
+    "смотрю, часто ли такая же разница выходит сама собой. Если выходит - это "
+    "совпадение, и я про него молчу.\n"
+    "Ещё проверяю третий фактор: если в те же дни случалось что-то ещё и без "
+    "него разница пропадает, я так и говорю - дело не в привычке.\n"
+    "И всё равно это статистика, а не доказательство. Надёжнее один способ - "
+    "проверить на себе: неделю с привычкой, неделю без.")
+
+# «А если я вообще брошу кофе на неделю?» - человек сам предлагает эксперимент.
+# Это ровно то, ради чего дневник и нужен, и отвечать на такое «не понял» -
+# упустить главный разговор.
+_TRY_WITHOUT = re.compile(
+    r"если (?:я )?(?:вообще )?(?:брошу|перестану|уберу|откажусь|не буду|"
+    r"завяжу|прекращу)|что будет если|попробовать без|прожить без|"
+    r"недел\w* без")
+
+TRY_WITHOUT_REPLY = (
+    "Это и есть самая честная проверка. Схема простая: неделю живёте как "
+    "обычно, неделю - без этой привычки, и каждый день отмечаете самочувствие "
+    "парой слов.\n"
+    "Через две недели сравню обе половины и скажу прямо: подтвердилось, не "
+    "подтвердилось или данных не хватило. Начинайте, когда удобно, - я замечу "
+    "по записям.")
+
+
+# Раздражение и отказ. «Да достал ты со своими вопросами», «ничего не хочу
+# сегодня писать» - это не бессмыслица, а прямая просьба отстать. Ответ «не
+# понял, что записать» на неё выглядит как издевательство, а следующий вопрос
+# добивает: человек закрывает дневник и не возвращается.
+_ANNOYED = re.compile(
+    r"достал|заколебал|отстань|отвали|хватит вопрос|сколько можно|"
+    r"не хочу (?:писать|рассказывать|отвечать)|"
+    r"ничего не (?:хочу|буду) (?:писать|рассказывать)|не сегодня|"
+    r"без вопросов|перестань спрашивать")
+
+ANNOYED_REPLY = ("Понял, вопросов на сегодня больше не будет. Дневник от этого "
+                 "не испортится: что записано - то записано.\n"
+                 "Захотите рассказать - просто напишите, я тут.")
+
+# Куда уходят записи. Вопрос законный, и отвечать на него надо прямо, а не
+# «не понял»: человек решает, доверять ли программе свои дни.
+_PRIVACY = re.compile(
+    r"(?:данные|записи|дневник)\w*.{0,25}(?:переда|продаёшь|продаешь|"
+    r"отправля|сливаешь|уход|храни|хранятся|видит|видят)|"
+    r"кто (?:это )?(?:видит|читает)|это конфиденциальн|куда уход|"
+    r"на сервер|в облак")
+
+PRIVACY_REPLY = (
+    "Записи лежат в файле на вашем компьютере и никуда сами не уходят. "
+    "Наружу отправляется только текст реплики - в языковую модель, чтобы её "
+    "разобрать; если ключа модели нет, разбор идёт по словарю и не уходит "
+    "никуда вообще.\n"
+    "Выгрузить всё к себе или стереть можно в любой момент - кнопки «Выгрузить "
+    "дневник» и «Начать заново».")
+
+# Просьба стереть. Делать это сами не вправе - удаление необратимо, - но и
+# отмолчаться нельзя: человек имеет право забрать свои записи.
+_DELETE = re.compile(
+    r"удали|сотри|стереть|очисти|забудь всё|забудь все|"
+    r"начать заново|обнули")
+
+DELETE_REPLY = ("Стереть всё можно кнопкой «Начать заново» - она внизу "
+                "страницы, и после неё дневник будет пустым.\n"
+                "Сам я записи не удаляю: отменить это нельзя, и решать тут "
+                "вам. Если нужна копия перед удалением - «Выгрузить дневник».")
+
+
 # «Что ты про меня знаешь?», «что там у меня?», «какие выводы?» - это вопрос
 # про дневник, а не запись дня. Отвечать на него «не понял, что записать» -
 # самый быстрый способ показать человеку, что перед ним форма ввода.
@@ -569,20 +819,56 @@ def _what_i_know(diary: Diary, day: date) -> str:
     return "\n".join(lines)
 
 
+def asks_us(text: str) -> bool:
+    """
+    Реплика - вопрос к программе, а не рассказ про день: «что ты про меня
+    знаешь?», «ты вообще живая?», «что мне выпить?».
+
+    Нужно до разбора: пока такой вопрос шёл общим путём, он засчитывался
+    ответом на висящий вопрос («сколько выпили?») и уходил в дневник деталью
+    привычки - человек спрашивал, а в ответ получал «Записал: алкоголь».
+    """
+    lowered = (text or "").strip().lower()
+    if not lowered:
+        return False
+    return bool(_MEDICAL.search(lowered) or _WHO_ARE_YOU.search(lowered)
+                or _ABOUT_ME.search(lowered) or _PRIVACY.search(lowered)
+                or _DELETE.search(lowered) or _ANNOYED.search(lowered)
+                or _HOW_SURE.search(lowered) or _TRY_WITHOUT.search(lowered))
+
+
 def _small_talk(diary: Diary, text: str, day: date, origin: str,
                 before_seq: int) -> list[dict]:
     """Ответ на реплику, в которой мы ничего не разобрали."""
     lowered = text.strip().lower()
-    if _ABOUT_ME.search(lowered):
+    if _HOW_SURE.search(lowered):
+        diary.say("bot", HOW_SURE_REPLY, origin=origin)
+    elif _TRY_WITHOUT.search(lowered):
+        diary.say("bot", TRY_WITHOUT_REPLY, origin=origin)
+    elif _ANNOYED.search(lowered):
+        diary.quiet_day = day
+        diary.forget_question()
+        diary.say("bot", ANNOYED_REPLY, origin=origin)
+    elif _DELETE.search(lowered):
+        diary.say("bot", DELETE_REPLY, origin=origin)
+    elif _PRIVACY.search(lowered):
+        diary.say("bot", PRIVACY_REPLY, origin=origin)
+    elif _MEDICAL.search(lowered):
+        diary.say("bot", MEDICAL_REPLY, origin=origin)
+    elif _WHO_ARE_YOU.search(lowered):
+        diary.say("bot", WHO_REPLY, origin=origin)
+    elif _ABOUT_ME.search(lowered):
         diary.say("bot", _what_i_know(diary, day), origin=origin)
     elif _GREETING.match(lowered):
         diary.say("bot", GREETING_REPLY, origin=origin)
     elif _THANKS.match(lowered):
         diary.say("bot", THANKS_REPLY, origin=origin)
-    elif diary.pending == NO_STATE and _bare_score(lowered):
-        # «А как вы себя чувствовали?» - вопрос без показателя, и голая оценка
-        # к нему не привязывается: семь чего? Спрашиваем прямо, а не отвечаем
-        # «не понял» на осмысленную реплику.
+    elif _bare_score(lowered):
+        # Голая оценка - «на 4» - осмысленная реплика: человек называет балл,
+        # просто не сказал чему. Отвечать на неё «не понял» - обидно и неверно;
+        # спрашиваем прямо, про что это. Раньше так отвечали только на вопрос
+        # «как вы себя чувствовали?», а без висящего вопроса человек получал
+        # «не понял» на собственное уточнение.
         diary.say("bot", WHICH_METRIC, origin=origin)
     elif diary.pending:
         diary.say("bot", DID_NOT_GET_IT, origin=origin)

@@ -180,3 +180,52 @@ def test_a_day_deep_inside_the_phrase_is_not_its_topic():
     """
     today = date(2026, 8, 20)
     assert day_mentioned("на 7, но это скорее из-за того что вчера лёг рано", today) is None
+
+
+RULES = RuleExtractor()
+
+
+def test_time_of_day_found_through_the_whole_clause():
+    """«Вечером выпил с друзьями пива» - вечер относится к пиву."""
+    record = RULES.extract("вечером выпил с друзьями пива, наверное лишнее",
+                           date.today())
+    names = [f.name for f in record.facts if f.kind == "factor"]
+    assert "алкоголь вечером" in names
+
+
+def test_different_clauses_keep_their_own_time():
+    record = RULES.extract("утром кофе, вечером тренировка в зале", date.today())
+    names = [f.name for f in record.facts if f.kind == "factor"]
+    assert "кофе утром" in names and "тренировка вечером" in names
+    assert "кофе вечером" not in names
+
+
+def test_no_strength_left_is_a_low_score():
+    record = RULES.extract("сил вообще нет", date.today())
+    assert record.metric("энергия") == 2.0
+
+
+def test_guilt_is_not_wine():
+    """«Виноват» и «не моя вина» - не алкоголь."""
+    record = RULES.extract("откуда ты знаешь что кофе виноват", date.today())
+    assert record.factor("алкоголь") is None
+
+
+def test_heavy_event_is_one_factor():
+    for said in ("умер дедушка", "весь день на похоронах", "меня уволили",
+                 "весь день в больнице"):
+        record = RULES.extract(said, date.today())
+        assert record.factor("тяжёлое событие") == 1.0, said
+
+
+def test_moderate_drinking_is_not_a_heavy_event():
+    record = RULES.extract("пил умеренно, два бокала вина", date.today())
+    assert record.factor("тяжёлое событие") is None
+    assert record.factor("алкоголь") == 1.0
+
+
+def test_day_can_be_found_anywhere_for_corrections():
+    today = date(2026, 8, 21)                    # пятница
+    assert day_mentioned("а нет, вру, это был вторник", today) is None
+    assert day_mentioned("а нет, вру, это был вторник", today,
+                         anywhere=True) == date(2026, 8, 18)

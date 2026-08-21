@@ -107,6 +107,31 @@ def yandexgpt_complete(model: str = "yandexgpt-lite", timeout: int = 30) -> Comp
     return complete
 
 
+def _ask_claude(body: dict, key: str, timeout: int) -> dict | None:
+    """
+    Один запрос к Claude. None - сервис не принял тело запроса (ответ 400):
+    значит, поле из тела этой модели незнакомо и надо спросить иначе.
+    Остальные ошибки не глотаем: их обрабатывает тот, кто звал разбор.
+    """
+    import urllib.error
+    import urllib.request
+
+    request = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", "x-api-key": key,
+                 "anthropic-version": "2023-06-01"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout,
+                                    context=ssl_context()) as response:
+            return json.loads(response.read())
+    except urllib.error.HTTPError as error:
+        if error.code == 400:
+            return None
+        raise
+
+
 def claude_complete(model: str = "claude-sonnet-5", timeout: int = 30) -> Complete:
     """
     Вызов Claude. Ключ читается из ANTHROPIC_API_KEY. Обращаю внимание: из
@@ -117,24 +142,28 @@ def claude_complete(model: str = "claude-sonnet-5", timeout: int = 30) -> Comple
         raise RuntimeError("не задан ANTHROPIC_API_KEY")
 
     def complete(prompt: str) -> str:
-        import urllib.request
-
         # temperature не задаём: свежие модели её не принимают и отвечают 400,
         # а разбор молча откатывается на правила - человек видит «не понял, что
         # записать» и думает, что программа не умеет разбирать речь.
-        body = json.dumps({
+        #
+        # Рассуждение выключаем явно. Свежие модели рассуждают по умолчанию, и
+        # на разбор дневниковой записи весь запас токенов уходил в размышления:
+        # ответ приходил одним блоком thinking, текста в нём не было вовсе, и
+        # разбор молча падал на словарь. Со стороны это и выглядело «моделью,
+        # которая через раз не понимает». Думать тут не над чем - нужен JSON.
+        payload_out = {
             "model": model,
             "max_tokens": 600,
             "messages": [{"role": "user", "content": prompt}],
-        }).encode()
-        request = urllib.request.Request(
-            "https://api.anthropic.com/v1/messages",
-            data=body,
-            headers={"Content-Type": "application/json", "x-api-key": key,
-                     "anthropic-version": "2023-06-01"},
-        )
-        with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
-            payload = json.loads(response.read())
+            "thinking": {"type": "disabled"},
+        }
+        payload = _ask_claude(payload_out, key, timeout)
+        if payload is None:
+            # Модель этого поля не знает - спрашиваем без него, но с запасом
+            # токенов, чтобы после размышлений хватило и на сам ответ.
+            second = {k: v for k, v in payload_out.items() if k != "thinking"}
+            second["max_tokens"] = 4000
+            payload = _ask_claude(second, key, timeout) or {}
         # Ответ приходит списком блоков, и текстовый в нём не обязательно первый:
         # свежие модели кладут перед ним свои служебные. Брать content[0] вслепую
         # нельзя - на таком ответе разбор падал и молча уходил на словарь, а

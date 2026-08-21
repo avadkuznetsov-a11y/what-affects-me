@@ -32,7 +32,7 @@ from .derive import derive_factors
 from .habits import imply_absences
 from .insights import (OBSERVATION_MIN_DAYS, OBSERVATION_PERMUTATIONS, Link,
                        find_links)
-from .schema import DayRecord, Timeline
+from .schema import DayRecord, Fact, Timeline
 from .storage import Storage
 
 # Код привязки живёт недолго: это пароль к дневнику, произнесённый вслух.
@@ -101,6 +101,13 @@ class Diary:
         # разговор: человек вернулся в дневник, а его встречают допросом -
         # так во второй раз он уже не вернётся.
         self.gap_asked: date | None = None
+        # День, в который человек попросил не спрашивать («достал ты со своими
+        # вопросами»). До конца этого дня только записываем, молча.
+        self.quiet_day: date | None = None
+        # Что и в какой день записала прошлая реплика. Нужно для поправки:
+        # «а нет, вру, это был вторник» - и запись надо перенести целиком.
+        self.last_added: list[Fact] = []
+        self.last_day: date | None = None
         self.messages: list[dict] = []
         self.seq = 0                         # номер последнего сообщения в ленте
         # Один шаг разговора за раз. Замок повторный: его берут и сами методы
@@ -267,6 +274,9 @@ class Diary:
             self.drift_said = None
             self.wrapped_day = None
             self.gap_asked = None
+            self.quiet_day = None
+            self.last_added = []
+            self.last_day = None
             self.messages = []
             self._links_version = None
             self._hints_version = None
