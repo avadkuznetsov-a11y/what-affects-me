@@ -177,7 +177,10 @@
     работающий источник. */
  #sources{padding:12px 16px 14px;background:#fbfcfd}
  #sources .h{font-size:11.5px;color:var(--soft);margin-bottom:5px}
- #sources .card{display:block;padding:3px 0;font-size:13px;color:var(--soft);border:0}
+ #sources{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
+ #sources .h{flex:1 1 100%}
+ #sources .card{display:inline;padding:0;font-size:13px;color:var(--soft);border:0}
+ #sources .card:not(:last-child)::after{content:','}
  #sources .card b{font-weight:500}
  #sources .card em{font-style:normal}
  #sources .card .state,#sources .card::before{display:none}
@@ -287,9 +290,7 @@
             <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
             <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
             <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
-            <p class="hint">Ползунки здесь двигаются руками - в продукте цифры приходят от
-              устройства. Приложение кольца показывает сон, стресс и активность; пульс и
-              фазы сна доступны выгрузкой.</p>
+            <p class="hint">Двигаются руками - в продукте приходят от устройства.</p>
           </div>
         </details>
 
@@ -314,9 +315,8 @@
 2026-08-01,2900,70,95,410"></textarea>
               <div class="row"><button class="small ghost" onclick="sendFood(true)">Загрузить</button></div>
             </details>
-            <p class="hint" id="food-note">Из чисел получаются такие же факторы дня, как кофе
-              или прогулка: переел, недоел, мало белка, много углеводов. Пороги - от обычной
-              суточной нормы взрослого, это не советы по питанию.</p>
+            <p class="hint" id="food-note">Из чисел выходят факторы дня: переел, недоел,
+              мало белка, много углеводов.</p>
           </div>
         </details>
 
@@ -329,10 +329,9 @@
               <button class="small ghost" onclick="setCity()">Сохранить</button>
             </div>
             <div id="weather-today" hidden></div>
-            <p class="hint" id="city-note">Назовите город - и давление, температура и облачность
-              станут такими же факторами дня, как кофе или тренировка.</p>
-            <p class="hint" id="weather-from">Данные берём в open-meteo.com: открытые, без ключа
-              и регистрации. История прошлых дней - оттуда же.</p>
+            <p class="hint" id="city-note">Назовите город - и погода станет таким же фактором
+              дня, как кофе.</p>
+            <p class="hint" id="weather-from">Данные: open-meteo.com, без ключа.</p>
           </div>
         </details>
 
@@ -433,9 +432,7 @@ function drawSources(){
     card.className = 'card';
     const name = document.createElement('b');
     name.textContent = source.name;
-    const note = document.createElement('em');
-    note.textContent = ' - ' + source.note;
-    card.append(name, note);
+    card.append(name);
     box.appendChild(card);
   }
   drawWeatherRow();
@@ -492,6 +489,8 @@ function drawWeatherRow(){
   st.textContent = city ? 'подключено' : 'не подключено';
   st.classList.toggle('on', !!city);
   sub.textContent = city || 'город не назван';
+  const note = document.getElementById('city-note');
+  if(note) note.hidden = !!city;
 }
 
 async function setCity(){
