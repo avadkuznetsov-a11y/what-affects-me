@@ -8,6 +8,7 @@
 """
 import io
 import json
+import shutil
 import urllib.request
 
 import pytest
@@ -127,3 +128,41 @@ class _Response:
 
     def __exit__(self, *_) -> bool:
         return False
+
+
+def test_claude_code_engine_runs_the_local_cli(monkeypatch):
+    """
+    Подписка и ключ к API - разные кошельки. У человека с подпиской и без
+    кредитов ключ отвечает отказом, хотя та же модель доступна ему через свой
+    же Claude Code. Значит движок должен звать местную программу.
+    """
+    import subprocess
+
+    calls = []
+
+    class _Done:
+        returncode = 0
+        stdout = '{"factors": []}'
+        stderr = ""
+
+    monkeypatch.setattr(llm.shutil if hasattr(llm, "shutil") else shutil,
+                        "which", lambda name: "/usr/local/bin/claude")
+    monkeypatch.setattr(subprocess, "run",
+                        lambda args, **kw: calls.append((args, kw)) or _Done())
+
+    assert llm.claude_code_complete()("разбери это") == '{"factors": []}'
+    args, kw = calls[0]
+    assert args[0] == "/usr/local/bin/claude" and "-p" in args
+    assert "--allowed-tools" in args        # инструменты разбору не нужны
+    assert kw["input"] == "разбери это"
+
+
+def test_engine_can_be_named_explicitly(monkeypatch):
+    """WAM_ENGINE выбирает движок прямо - когда ключ есть, но платить нечем."""
+    monkeypatch.setenv("WAM_ENGINE", "правила")
+    name, complete = llm.available_engine()
+    assert name == "правила"
+
+    monkeypatch.setenv("WAM_ENGINE", "неведомый движок")
+    with pytest.raises(RuntimeError, match="WAM_ENGINE"):
+        llm.available_engine()

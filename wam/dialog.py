@@ -582,7 +582,7 @@ def _answer(diary: Diary, record: DayRecord, text: str, added: list[Fact],
         return _small_talk(diary, text, record.day, origin, before_seq)
 
     if medical:
-        diary.say("bot", MEDICAL_REPLY, origin=origin)
+        _answer_once(diary, MEDICAL_REPLY, origin)
         return diary.feed(before_seq)
 
     if _ABOUT_ME.search(text.lower()):
@@ -959,26 +959,67 @@ DID_NOT_GET_IT_LAST = ("Ладно, не буду мучить. Напишете
 _DID_NOT_GET_LADDER = (DID_NOT_GET_IT, DID_NOT_GET_IT_AGAIN, DID_NOT_GET_IT_LAST)
 
 
+# Короткий вариант готового ответа - на случай, когда человек спрашивает о том
+# же второй раз. Слово в слово повторённый абзац читается как автоответчик:
+# «спор» в прогоне разговоров выдавал один и тот же текст про эксперимент три
+# реплики подряд.
+SHORT_AGAIN: dict[str, str] = {}
+
+# Третий раз объяснять то же самое незачем - лучше честно сказать, что уже
+# рассказали, и не занимать человеку экран.
+ALREADY_SAID = ("Про это я уже рассказал выше. Если что-то осталось непонятным - "
+                "спросите иначе, отвечу подробнее.")
+
+
+def _answer_once(diary: Diary, text: str, origin: str) -> None:
+    """
+    Сказать готовый ответ. Второй раз - короче, третий - отсылкой к сказанному.
+    """
+    said = [message["text"] for message in diary.messages]
+    short = SHORT_AGAIN.get(text, "")
+    if text not in said:
+        diary.say("bot", text, origin=origin)
+    elif short and short not in said:
+        diary.say("bot", short, origin=origin)
+    else:
+        diary.say("bot", ALREADY_SAID, origin=origin)
+
+
+SHORT_AGAIN.update({
+    HOW_SURE_REPLY: "Считаю всё так же: сравниваю ваши дни с привычкой и без "
+                    "неё и проверяю, не выходит ли такая же разница случайно.",
+    TRY_WITHOUT_REPLY: "Схема та же: неделя как обычно, неделя без привычки. "
+                       "Скажете «начали» - буду считать дни.",
+    ANNOYED_REPLY: "Понял, молчу. Записывать буду, спрашивать - нет.",
+    DELETE_REPLY: "Стереть - кнопка «Начать заново» внизу страницы.",
+    PRIVACY_REPLY: "Записи лежат у вас на компьютере; наружу уходит только "
+                   "текст реплики - в модель, чтобы её разобрать.",
+    MEDICAL_REPLY: "Про лечение по-прежнему не советую. Могу собрать выгрузку "
+                   "для врача - кнопка «Выгрузить дневник».",
+    WHO_REPLY: "Программа. Речь разбирает модель, связи считает статистика.",
+})
+
+
 def _small_talk(diary: Diary, text: str, day: date, origin: str,
                 before_seq: int) -> list[dict]:
     """Ответ на реплику, в которой мы ничего не разобрали."""
     lowered = text.strip().lower()
     if _HOW_SURE.search(lowered):
-        diary.say("bot", HOW_SURE_REPLY, origin=origin)
+        _answer_once(diary, HOW_SURE_REPLY, origin)
     elif _TRY_WITHOUT.search(lowered):
-        diary.say("bot", TRY_WITHOUT_REPLY, origin=origin)
+        _answer_once(diary, TRY_WITHOUT_REPLY, origin)
     elif _ANNOYED.search(lowered):
         diary.quiet_day = day
         diary.forget_question()
-        diary.say("bot", ANNOYED_REPLY, origin=origin)
+        _answer_once(diary, ANNOYED_REPLY, origin)
     elif _DELETE.search(lowered):
-        diary.say("bot", DELETE_REPLY, origin=origin)
+        _answer_once(diary, DELETE_REPLY, origin)
     elif _PRIVACY.search(lowered):
-        diary.say("bot", PRIVACY_REPLY, origin=origin)
+        _answer_once(diary, PRIVACY_REPLY, origin)
     elif _MEDICAL.search(lowered):
         diary.say("bot", MEDICAL_REPLY, origin=origin)
     elif _WHO_ARE_YOU.search(lowered):
-        diary.say("bot", WHO_REPLY, origin=origin)
+        _answer_once(diary, WHO_REPLY, origin)
     elif _ABOUT_ME.search(lowered):
         diary.say("bot", _what_i_know(diary, day), origin=origin)
     elif _GREETING.match(lowered):

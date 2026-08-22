@@ -197,11 +197,53 @@ def claude_complete(model: str = "claude-sonnet-5", timeout: int = 30) -> Comple
     return complete
 
 
+def claude_code_complete(model: str = "claude-haiku-4-5-20251001",
+                        timeout: int = 180) -> Complete:
+    """
+    Разбор через Claude Code - тот самый, что стоит у человека на машине.
+
+    Отдельный движок нужен потому, что подписка и ключ к API - разные кошельки:
+    подписка оплачивает работу в приложении и в терминале, а вызовы
+    api.anthropic.com тарифицируются кредитами отдельно. У человека с подпиской
+    и без кредитов ключ отвечает «credit balance is too low», хотя сама модель
+    ему доступна - через свой же CLI.
+
+    Расплата - скорость: каждый разбор это отдельный запуск программы, секунд
+    десять. Для дневника, куда пишут несколько раз в день, это приемлемо; для
+    сервера на много человек - нет, там нужен ключ.
+    """
+    import shutil
+
+    binary = shutil.which("claude")
+    if not binary:
+        raise RuntimeError("Claude Code не найден в PATH")
+
+    def complete(prompt: str) -> str:
+        import subprocess
+
+        answer = subprocess.run(
+            [binary, "-p", "--model", model,
+             # Инструменты разбору не нужны, а их загрузка - лишние секунды и
+             # лишние права: программа читает дневниковую запись, и лазить по
+             # файлам ей незачем.
+             "--allowed-tools", "",
+             "--strict-mcp-config",
+             "--no-session-persistence"],
+            input=prompt, text=True, capture_output=True, timeout=timeout,
+        )
+        if answer.returncode != 0:
+            raise RuntimeError((answer.stderr or "Claude Code не ответил")[:200])
+        return answer.stdout
+
+    return complete
+
+
 # Как включить свою модель - это же показывается на странице прототипа
 ENGINE_HINTS = (
     ("GigaChat", "GIGACHAT_TOKEN"),
     ("YandexGPT", "YANDEX_API_KEY и YANDEX_FOLDER_ID"),
     ("Claude", "ANTHROPIC_API_KEY"),
+    ("Claude Code", "установленный claude в PATH - работает по подписке"),
 )
 
 
@@ -211,8 +253,23 @@ def available_engine() -> tuple[str, Complete]:
     Правила - не заглушка, а страховка: продукт не должен вставать из-за
     недоступного сервиса.
     """
-    for name, factory in (("GigaChat", gigachat_complete), ("YandexGPT", yandexgpt_complete),
-                          ("Claude", claude_complete)):
+    engines = (("GigaChat", gigachat_complete), ("YandexGPT", yandexgpt_complete),
+               ("Claude", claude_complete), ("Claude Code", claude_code_complete))
+
+    # Движок можно назвать прямо - WAM_ENGINE=«Claude Code». Нужно, когда
+    # ключей несколько или когда ключ есть, но платить за него нечем: у
+    # человека с подпиской без кредитов API отвечает отказом, а свой же
+    # Claude Code разбирает речь прекрасно.
+    wanted = os.environ.get("WAM_ENGINE", "").strip().lower()
+    if wanted:
+        for name, factory in engines:
+            if name.lower() == wanted:
+                return name, factory()
+        if wanted in ("правила", "rules"):
+            return "правила", offline_complete
+        raise RuntimeError(f"неизвестный движок в WAM_ENGINE: {wanted}")
+
+    for name, factory in engines:
         try:
             return name, factory()
         except RuntimeError:

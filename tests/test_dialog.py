@@ -473,3 +473,19 @@ def test_wrong_day_moves_the_record():
     assert "Поправил" in said
     assert diary.record_for(today - timedelta(days=2)).factor("перелёт") == 1.0
     assert (today - timedelta(days=1)) not in [d.day for d in diary.timeline.days]
+
+
+def test_ready_answers_do_not_repeat_word_for_word():
+    """
+    Три вопроса подряд про эксперимент давали один и тот же абзац три раза -
+    так выглядит автоответчик, а не разговор. Второй раз отвечаем короче,
+    третий - отсылкой к сказанному.
+    """
+    diary = DiaryStore().get("web")
+    first = _step(diary, "а если я вообще брошу пить кофе на неделю?")
+    second = _step(diary, "что будет если я перестану пить вечером?")
+    third = _step(diary, "давай попробую неделю без сладкого")
+
+    assert dialog.TRY_WITHOUT_REPLY in [m["text"] for m in first]
+    assert dialog.SHORT_AGAIN[dialog.TRY_WITHOUT_REPLY] in [m["text"] for m in second]
+    assert dialog.ALREADY_SAID in [m["text"] for m in third]
