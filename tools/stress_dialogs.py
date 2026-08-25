@@ -322,7 +322,9 @@ def check_question_answered(turn: Turn, talk: Talk) -> str:
         return ""
     known = (dialog.MEDICAL_REPLY, dialog.WHO_REPLY, dialog.PRIVACY_REPLY,
              dialog.DELETE_REPLY, dialog.HOW_SURE_REPLY, dialog.TRY_WITHOUT_REPLY,
-             dialog.ANNOYED_REPLY)
+             dialog.ANNOYED_REPLY, dialog.ALREADY_SAID,
+             # На повторный вопрос дневник отвечает короче - это тоже ответ
+             *dialog.SHORT_AGAIN.values())
     said = turn.bot_text()
     if any(answer in said for answer in known) or "Дней в дневнике" in said:
         return ""
