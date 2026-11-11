@@ -313,3 +313,17 @@ def test_reminders_have_no_cap_in_server_mode(world):
     for chat in range(1, 260):
         bot.reminders.remember(chat)
     assert len(bot.reminders.chats()) == 259
+
+
+def test_bot_shares_the_daily_parse_limit(world, monkeypatch):
+    """Потолок разбора - на человека, в сумме со страницей: тот же счётчик."""
+    from wam import limits
+
+    monkeypatch.setattr(limits, "SAY_PER_DAY", limits.Limiter(2, 24 * 3600))
+    bot, store, _, api = world
+    _ready(bot)
+    assert limits.SAY_PER_DAY.allow(101)            # одна реплика ушла со страницы
+    _say(bot, "Пил кофе, с утра тревога")
+    _say(bot, "Ходил в зал")
+    assert "завтра" in api.sent(101)[-1]["text"]
+    assert store.get(user_key(101)).today().factor("тренировка") is None

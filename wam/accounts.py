@@ -45,6 +45,11 @@ CONSENT_VERSION = "2026-11-11-черновик"
 
 COOKIE = "__Host-mira_sid"
 
+# Сколько хранится аккаунт, в который не входили и не писали. Решение
+# владельца от 11.11.2026: год. Потом аккаунт удаляется целиком, как по
+# кнопке «Удалить всё». Переопределяется переменной MIRA_RETENTION_DAYS.
+RETENTION_DAYS = 365
+
 
 def user_key(user_id: int) -> str:
     """Ключ дневника человека. Один номер - всегда один и тот же дневник."""
@@ -84,9 +89,10 @@ class Accounts:
         """Завести человека или обновить его имя в Telegram. Согласие не трогаем."""
         with self.storage.atomic() as db:
             db.execute(
-                "INSERT INTO users(user_id, username, created_at) VALUES(?,?,?) "
-                "ON CONFLICT(user_id) DO UPDATE SET username=excluded.username",
-                (int(user_id), (username or "")[:64], time.time()))
+                "INSERT INTO users(user_id, username, created_at, active_at) VALUES(?,?,?,?) "
+                "ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, "
+                "active_at=excluded.active_at",
+                (int(user_id), (username or "")[:64], time.time(), time.time()))
 
     def user(self, user_id: int) -> dict | None:
         with self.storage.atomic() as db:
@@ -158,6 +164,7 @@ class Accounts:
             db.execute("DELETE FROM sessions WHERE seen_at<=?", (now - SESSION_LIFETIME,))
             db.execute("INSERT INTO sessions(sid_hash, user_id, created_at, seen_at) "
                        "VALUES(?,?,?,?)", (_digest(sid), int(user_id), now, now))
+            db.execute("UPDATE users SET active_at=? WHERE user_id=?", (now, int(user_id)))
         return sid
 
     def session_user(self, sid) -> int | None:
@@ -177,6 +184,7 @@ class Accounts:
                 return None
             if seen_at <= now - SESSION_TOUCH:
                 db.execute("UPDATE sessions SET seen_at=? WHERE sid_hash=?", (now, digest))
+                db.execute("UPDATE users SET active_at=? WHERE user_id=?", (now, user_id))
         return int(user_id)
 
     def close_session(self, sid) -> None:
@@ -184,6 +192,26 @@ class Accounts:
             return
         with self.storage.atomic() as db:
             db.execute("DELETE FROM sessions WHERE sid_hash=?", (_digest(sid),))
+
+    # ── срок хранения ─────────────────────────────────────────────────────
+    def idle(self, days: int, now: float | None = None) -> list[int]:
+        """
+        Кто не входил на страницу и ничего не записывал дольше `days` дней.
+
+        Вход - это active_at: его ставят /start и /login в боте, вход по
+        ссылке и заходы на страницу (раз в час, вместе с продлением сессии).
+        Записи - это отметка дневника diaries.seen: её ставит каждое
+        сохранение, откуда бы ни пришла запись. Нет ни того, ни другого -
+        считаем от заведения аккаунта.
+        """
+        edge = (time.time() if now is None else now) - days * 24 * 60 * 60
+        with self.storage.atomic() as db:
+            rows = db.execute(
+                "SELECT u.user_id FROM users u "
+                "LEFT JOIN diaries d ON d.diary = 'u:' || u.user_id "
+                "WHERE MAX(COALESCE(u.active_at, u.created_at), u.created_at, "
+                "          COALESCE(d.seen, 0)) < ?", (edge,)).fetchall()
+        return [int(row[0]) for row in rows]
 
     # ── удаление ──────────────────────────────────────────────────────────
     def erase(self, user_id: int, store) -> None:

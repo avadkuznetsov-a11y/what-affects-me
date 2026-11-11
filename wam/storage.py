@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS users (
     username        TEXT NOT NULL DEFAULT '',
     created_at      REAL NOT NULL,
     consent_at      REAL,
-    consent_version TEXT
+    consent_version TEXT,
+    active_at       REAL
 );
 CREATE TABLE IF NOT EXISTS sessions (
     sid_hash   TEXT PRIMARY KEY,
@@ -91,6 +92,20 @@ CREATE TABLE IF NOT EXISTS reminders (
     sent    TEXT NOT NULL DEFAULT ''
 );
 """
+
+
+# Колонки, появившиеся после того, как таблица уже могла быть заведена.
+# CREATE IF NOT EXISTS старую таблицу не трогает, поэтому досоздаём их сами.
+# Только добавляем: откат на прежний код такую базу читает как раньше.
+_LATER_COLUMNS = (("users", "active_at", "REAL"),)
+
+
+def _add_missing_columns(db: sqlite3.Connection) -> None:
+    for table, column, kind in _LATER_COLUMNS:
+        have = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
+        if column not in have:
+            db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    db.commit()
 
 
 @dataclass
@@ -157,6 +172,7 @@ class Storage:
         os.chmod(self.path, 0o600)
         db = sqlite3.connect(self.path, check_same_thread=False)
         db.executescript(_SCHEMA)
+        _add_missing_columns(db)
         return db
 
     # ── чтение при запуске ────────────────────────────────────────────────

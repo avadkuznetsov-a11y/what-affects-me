@@ -212,6 +212,10 @@
  .gate{flex:1;width:100%;max-width:560px;margin:0 auto;padding:18px 24px 24px}
  .gate .body p{margin:0}
  .gate a{color:var(--accent)}
+ .gate .agree{display:flex;gap:9px;align-items:flex-start;font-size:14px;color:var(--text)}
+ .gate .agree input{margin-top:4px}
+ #account a{color:var(--accent)}
+ #account .tg-more .row{margin-top:8px}
 
  /* Телефон: разговор занимает экран, панели переключаются полосой внизу. */
  @media (max-width:860px){
@@ -266,6 +270,25 @@
       <p class="warn" id="gate-error" hidden></p>
     </div>
   </section>
+
+  <section class="block" id="gate-consent" hidden>
+    <div class="head"><h2>Согласие на обработку данных</h2></div>
+    <div class="body">
+      <p>Мира записывает то, что вы рассказываете про сон, самочувствие и привычки.
+        Это данные о здоровье, и без вашего согласия мы их не обрабатываем.</p>
+      <p class="hint">Что храним, кто ещё их видит, сколько храним и как всё удалить -
+        <a href="/privacy" target="_blank" rel="noopener">в политике</a>. Сообщения боту
+        идут через Telegram.</p>
+      <label class="agree"><input type="checkbox" id="agree"
+        onchange="document.getElementById('agree-btn').disabled = !this.checked">
+        Я прочитал политику и согласен на обработку моих данных, включая данные о здоровье</label>
+      <div class="row">
+        <button class="small" id="agree-btn" disabled onclick="agree()">Согласен</button>
+        <button class="small ghost" onclick="logout()">Выйти</button>
+      </div>
+      <p class="warn" id="consent-error" hidden></p>
+    </div>
+  </section>
 </main>
 
 <main class="grid" id="grid">
@@ -302,17 +325,17 @@
         <select id="days" aria-label="Срок дневника"></select>
       </div>
       <div class="body">
-        <p class="hint">Дневник за выбранный срок придуман для показа: связи в нём заложены заранее.</p>
+        <p class="hint" id="demo-note">Дневник за выбранный срок придуман для показа: связи в нём заложены заранее.</p>
         <div class="row">
           <button class="small ghost" id="sum" onclick="summary()">Показать все выводы</button>
-          <button class="small ghost" onclick="reset()">Начать заново</button>
+          <button class="small ghost" id="reset" onclick="reset()">Начать заново</button>
         </div>
         <p class="hint" id="counting" hidden>Считаю выводы за выбранный срок - это несколько секунд.</p>
-        <div class="row">
+        <div class="row" id="export-row">
           <button class="small ghost" onclick="save('text')">Скачать дневник</button>
           <button class="small ghost" onclick="save('csv')">Таблицей для Excel</button>
         </div>
-        <p class="hint">Ваши записи одним файлом - чтобы принести врачу не «мне плохо», а дни
+        <p class="hint" id="export-note">Ваши записи одним файлом - чтобы принести врачу не «мне плохо», а дни
           с цифрами. Придуманный дневник в файл не идёт. Файл собирается в момент нажатия
           и на сервере не остаётся.</p>
       </div>
@@ -381,7 +404,31 @@
       </div>
     </section>
 
-    <section class="block" data-panel="telegram">
+    <!-- Режим server: вместо панели бота - свой аккаунт и свои данные. -->
+    <section class="block" data-panel="telegram" id="account" hidden>
+      <div class="head"><h2>Мои данные</h2></div>
+      <div class="body">
+        <p class="ok">Telegram подключён<span id="account-name"></span></p>
+        <div class="row">
+          <button class="small ghost" onclick="save('text')">Скачать дневник</button>
+          <button class="small ghost" onclick="save('csv')">Таблицей для Excel</button>
+        </div>
+        <details class="tg-more">
+          <summary>Удалить всё</summary>
+          <p class="hint">Удалятся записи, напоминания, вход на страницу и сам аккаунт.
+            Вернуть их будет нельзя. Чтобы подтвердить, впишите слово УДАЛИТЬ.</p>
+          <div class="row"><input id="erase-word" type="text" autocomplete="off"
+                 placeholder="УДАЛИТЬ"></div>
+          <div class="row"><button class="small ghost" onclick="eraseAll()">Удалить всё</button></div>
+        </details>
+        <div class="row"><button class="small ghost" onclick="logout()">Выйти</button></div>
+        <p class="hint"><a href="/privacy" target="_blank" rel="noopener">Как мы обращаемся
+          с данными</a></p>
+        <p class="warn" id="account-error" hidden></p>
+      </div>
+    </section>
+
+    <section class="block" data-panel="telegram" id="tg-panel">
       <div class="head"><h2>Telegram</h2></div>
       <div class="body">
         <div id="tg-off" class="stack">
@@ -679,7 +726,10 @@ async function talk(path, body){
 // ── вход (режим server) ───────────────────────────────────────────────────
 const BOT = '__BOT__';
 
-function showGate(error){
+function showGate(error, which){
+  const consent = which === 'consent';
+  document.getElementById('gate-login').hidden = consent;
+  document.getElementById('gate-consent').hidden = !consent;
   document.getElementById('gate').hidden = false;
   document.getElementById('grid').hidden = true;
   document.querySelector('.tabs').hidden = true;
@@ -782,6 +832,10 @@ async function save(kind){
 }
 
 async function reset(){
+  // На сервере кнопка зовётся «Очистить ленту», а сегодняшние записи уходят
+  // вместе с лентой - об этом надо сказать до нажатия, а не после.
+  if(serverDrawn && !confirm('Лента разговора и сегодняшние записи очистятся. '
+                             + 'Прошлые дни останутся.')) return;
   try {
     await talk('/reset', {});
   } catch(e) {
@@ -944,10 +998,70 @@ function drawTelegram(extra){
 
 // Режим server: человек вошёл. Запоминаем метку CSRF и открываем дневник.
 // Ответ false - дневник показывать нельзя, остальной разбор состояния не нужен.
+let serverDrawn = false;
+
 function drawAccount(state){
   csrf = state.csrf || '';
+  if(state.consent_needed){ showGate(undefined, 'consent'); return false; }
   hideGate();
+  const name = (state.account || {}).username;
+  document.getElementById('account-name').textContent = name ? ': @' + name : '';
+  if(!serverDrawn){
+    serverDrawn = true;
+    // Панель своего бота и код привязки - режим local. На сервере бот один,
+    // а на месте панели - свой аккаунт: выгрузка, удаление, выход.
+    document.getElementById('tg-panel').hidden = true;
+    document.getElementById('account').hidden = false;
+    document.querySelector('.tabs button[data-tab=telegram]').textContent = 'Мои данные';
+    // Выгрузка переехала в «Мои данные», две одинаковые кнопки ни к чему
+    document.getElementById('export-row').hidden = true;
+    document.getElementById('export-note').hidden = true;
+    // Придуманный дневник один на всех: человек должен видеть, что это не его записи
+    document.getElementById('sum').textContent = 'Пример на придуманных данных';
+    document.getElementById('demo-note').textContent =
+      'Пример, не ваши данные: придуманный дневник, связи в нём заложены заранее.';
+    document.getElementById('reset').textContent = 'Очистить ленту разговора';
+  }
   return true;
+}
+
+async function agree(){
+  const box = document.getElementById('consent-error');
+  try {
+    await talk('/consent', {agree: true});
+  } catch(e) {
+    box.textContent = 'Согласие не записалось: ' + e.message;
+    box.hidden = false;
+    return;
+  }
+  box.hidden = true;
+  poll();
+}
+
+async function logout(){
+  try { await talk('/auth/logout', {}); } catch(e) { /* сессии уже нет - и так вышли */ }
+  location.replace('/');
+}
+
+async function eraseAll(){
+  const field = document.getElementById('erase-word');
+  const box = document.getElementById('account-error');
+  if(field.value.trim() !== 'УДАЛИТЬ'){
+    box.textContent = 'Чтобы удалить всё, впишите слово УДАЛИТЬ.';
+    box.hidden = false;
+    return;
+  }
+  try {
+    await talk('/account/delete', {confirm: 'УДАЛИТЬ'});
+  } catch(e) {
+    box.textContent = 'Удалить не вышло: ' + e.message;
+    box.hidden = false;
+    return;
+  }
+  csrf = '';
+  document.getElementById('feed').innerHTML = '';
+  lastSeq = 0;
+  showGate('Всё удалено. Чтобы начать заново, напишите боту /start.');
 }
 
 // Опрос раз в две секунды и только когда вкладка открыта: держать соединение

@@ -77,16 +77,24 @@ def gigachat_complete(model: str = "GigaChat", timeout: int = 30) -> Complete:
     return complete
 
 
-def yandexgpt_complete(model: str = "yandexgpt-lite", timeout: int = 30) -> Complete:
+# Модель YandexGPT по умолчанию. yandexgpt-lite Яндекс отключает 15.11.2026,
+# поэтому берём пятое поколение; другую можно назвать в YANDEX_MODEL.
+YANDEX_MODEL = "yandexgpt-5.1/latest"
+
+
+def yandexgpt_complete(model: str | None = None, timeout: int = 30) -> Complete:
     """
     Вызов YandexGPT. Ключ и каталог читаются из окружения: YANDEX_API_KEY и
     YANDEX_FOLDER_ID. В репозитории их нет и быть не должно - тот, кто
     скачает код, получит разбор по правилам, пока не подставит свой ключ.
+
+    Модель - из YANDEX_MODEL, адрес модели собирается как gpt://каталог/модель.
     """
     key = os.environ.get("YANDEX_API_KEY", "")
     folder = os.environ.get("YANDEX_FOLDER_ID", "")
     if not key or not folder:
         raise RuntimeError("не заданы YANDEX_API_KEY и YANDEX_FOLDER_ID")
+    model = model or os.environ.get("YANDEX_MODEL", "").strip() or YANDEX_MODEL
 
     def complete(prompt: str) -> str:
         import urllib.request
@@ -99,7 +107,11 @@ def yandexgpt_complete(model: str = "yandexgpt-lite", timeout: int = 30) -> Comp
         request = urllib.request.Request(
             "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
             data=body,
-            headers={"Content-Type": "application/json", "Authorization": f"Api-Key {key}"},
+            headers={"Content-Type": "application/json", "Authorization": f"Api-Key {key}",
+                     # Без этого заголовка Яндекс вправе сохранять запросы для
+                     # улучшения своих моделей. В запросе - рассказ человека про
+                     # его здоровье, оставлять его у чужого сервиса нельзя.
+                     "x-data-logging-enabled": "false"},
         )
         with urllib.request.urlopen(request, timeout=timeout, context=ssl_context()) as response:
             payload = json.loads(response.read())
@@ -247,26 +259,47 @@ ENGINE_HINTS = (
 )
 
 
-def available_engine() -> tuple[str, Complete]:
+# Короткие имена движков для WAM_ENGINE: «yandex» пишут чаще, чем «yandexgpt».
+ENGINE_ALIASES = {"yandex": "yandexgpt"}
+
+
+def available_engine(only: tuple[str, ...] | None = None) -> tuple[str, Complete]:
     """
     Что доступно прямо сейчас: модель, если для неё есть ключ, иначе правила.
     Правила - не заглушка, а страховка: продукт не должен вставать из-за
     недоступного сервиса.
+
+    only - какие движки вообще разрешены. Режим server разрешает только
+    YandexGPT: туда уходят записи о здоровье многих людей, и выбор сервиса -
+    решение владельца, а не того, какой ключ случайно оказался в окружении.
+    С `only` названный, но не настроенный движок не роняет запуск, а уступает
+    правилам: сервис без модели работает, сервис без запуска - нет.
     """
     engines = (("GigaChat", gigachat_complete), ("YandexGPT", yandexgpt_complete),
                ("Claude", claude_complete), ("Claude Code", claude_code_complete))
+    if only is not None:
+        engines = tuple(engine for engine in engines if engine[0] in only)
 
     # Движок можно назвать прямо - WAM_ENGINE=«Claude Code». Нужно, когда
     # ключей несколько или когда ключ есть, но платить за него нечем: у
     # человека с подпиской без кредитов API отвечает отказом, а свой же
     # Claude Code разбирает речь прекрасно.
     wanted = os.environ.get("WAM_ENGINE", "").strip().lower()
+    wanted = ENGINE_ALIASES.get(wanted, wanted)
     if wanted:
         for name, factory in engines:
             if name.lower() == wanted:
-                return name, factory()
+                if only is None:
+                    return name, factory()
+                try:
+                    return name, factory()
+                except RuntimeError:
+                    return "правила", offline_complete
         if wanted in ("правила", "rules"):
             return "правила", offline_complete
+        if only is not None:
+            raise RuntimeError(f"движок из WAM_ENGINE здесь не разрешён: {wanted}; "
+                               f"можно {', '.join(only)} или правила")
         raise RuntimeError(f"неизвестный движок в WAM_ENGINE: {wanted}")
 
     for name, factory in engines:

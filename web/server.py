@@ -16,9 +16,12 @@
 from __future__ import annotations
 
 import hmac
+import html
+import ipaddress
 import json
 import os
 import threading
+import time
 from datetime import date, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -27,7 +30,9 @@ from urllib.parse import parse_qs, urlparse
 from bot.telegram import TelegramBot, token_is_shaped_right
 from demo.generate import build
 from wam import dialog, export, food, weather
-from wam.accounts import COOKIE, SESSION_LIFETIME, Accounts, csrf_for, user_key
+from wam import accounts, limits
+from wam.accounts import (CONSENT_VERSION, COOKIE, SESSION_LIFETIME, Accounts,
+                          csrf_for, user_key)
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
 from wam import storage
@@ -74,7 +79,11 @@ PERIODS: tuple[tuple[int, str], ...] = (
 # Речь разбирает модель, если для неё есть ключ в окружении. Ключей в
 # репозитории нет: у того, кто скачает код, будет работать разбор по правилам,
 # пока он не подставит свой ключ.
-ENGINE_NAME, _COMPLETE = available_engine()
+#
+# На сервере разрешён только YandexGPT: туда уходят записи о здоровье многих
+# людей, и сервис выбирает владелец, а не случайный ключ в окружении. Нет
+# ключа - разбор по правилам.
+ENGINE_NAME, _COMPLETE = available_engine(only=("YandexGPT",) if MODE == "server" else None)
 PARSER = dialog.Parser(ENGINE_NAME, _COMPLETE)
 
 # Дневник один на процесс: то, что человек написал боту в Telegram, видно на
@@ -643,13 +652,38 @@ def _short_basis(link) -> str:
 
 # Без входа в режиме server открыто только это: сама страница (она и есть
 # экран входа) и обмен ссылки от бота на сессию. Всё остальное - 401.
-OPEN_GET = ("/", "/login")
+OPEN_GET = ("/", "/login", "/privacy")
 OPEN_POST = ("/auth/login",)
+
+# Что можно без согласия: увидеть экран согласия, согласиться, выйти и
+# удалить себя. К дневнику без согласия не пускает ничто.
+NO_CONSENT = ("/state", "/consent", "/auth/logout", "/account/delete")
+
+# Слово, которым человек подтверждает удаление всего. То же, что в боте.
+ERASE_WORD = "УДАЛИТЬ"
+
+# Потолки запросов, кроме разбора речи (он в wam.limits, общий с ботом).
+# Вход - с одного адреса: это единственная дверь, куда можно ломиться
+# перебором. Погода ходит в чужой сервис - час на человека.
+LOGIN_LIMIT = limits.Limiter(10, 60)
+WEATHER_LIMIT = limits.Limiter(10, 60 * 60)
+
+# Кто оператор персональных данных - решает владелец, пока не решено.
+# Подставляется в текст политики, пустое значение честно видно как пропуск.
+OPERATOR = os.environ.get("MIRA_OPERATOR", "").strip()
+
+# Сколько дней хранить аккаунт без входа и без новых записей (решение
+# владельца от 11.11.2026 - год). Чистка идёт в фоне раз в сутки.
+try:
+    RETENTION_DAYS = max(1, int(os.environ.get("MIRA_RETENTION_DAYS", "")
+                                or accounts.RETENTION_DAYS))
+except ValueError:
+    raise SystemExit("MIRA_RETENTION_DAYS: ожидается число дней") from None
 
 POST_PATHS = ("/say", "/summary", "/reset", "/city", "/weather", "/food")
 LOCAL_POST = ("/telegram/connect", "/telegram/disconnect",
               "/telegram/code", "/telegram/unlink")
-SERVER_POST = ("/auth/login", "/auth/logout")
+SERVER_POST = ("/auth/login", "/auth/logout", "/consent", "/account/delete")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -669,7 +703,10 @@ class Handler(BaseHTTPRequestHandler):
             # достаёт токен из адреса после # и меняет его на сессию.
             self._send(page(), "text/html; charset=utf-8")
             return
-        if not self._admit():
+        if path == "/privacy":
+            self._send(privacy(), "text/html; charset=utf-8")
+            return
+        if not self._admit() or not self._consented(path):
             return
         if path == "/state":
             self._state()
@@ -688,6 +725,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _state(self) -> None:
         since = _int_param(self.path, "since")
+        if MODE == "server" and not ACCOUNTS.has_consent(self.uid):
+            # Без согласия - только то, что нужно экрану согласия: ни ленты,
+            # ни города. Метка CSRF нужна, чтобы нажать «Согласен».
+            user = ACCOUNTS.user(self.uid) or {}
+            self._send_json({"mode": MODE, "consent_needed": True,
+                             "consent_version": CONSENT_VERSION, "csrf": csrf_for(self.sid),
+                             "account": {"username": user.get("username", ""), "bot": BOT_NAME}},
+                            extra={"Set-Cookie": _cookie(self.sid)})
+            return
         if MODE == "server":
             # Панели бота со страницы в режиме server нет: бот у сервиса один,
             # и человек привязан к нему с первого /start.
@@ -714,6 +760,10 @@ class Handler(BaseHTTPRequestHandler):
                  # написано, что речь разбирает модель, а она молчит.
                  "model_error": PARSER.last_error}
         if MODE == "server":
+            # Почему молчит модель, видят все люди сразу: разборщик у сервиса
+            # один. Текст ошибки бывает с кусками ответа модели, а в нём -
+            # чужие слова. Поэтому на сервере - только сам факт.
+            state["model_error"] = "модель сейчас не отвечает" if PARSER.last_error else ""
             user = ACCOUNTS.user(self.uid) or {}
             state["account"] = {"username": user.get("username", ""), "bot": BOT_NAME}
             # Метка для заголовка X-CSRF: без неё страница не сможет ничего
@@ -734,6 +784,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if MODE == "server" and path not in OPEN_POST and not self._admit(csrf=True):
             return
+        if (MODE == "server" and path in known and path not in OPEN_POST
+                and not self._consented(path)):
+            return
         if path not in known:
             self._drain()
             self.send_error(404)
@@ -750,6 +803,20 @@ class Handler(BaseHTTPRequestHandler):
             ACCOUNTS.close_session(self.sid)
             self._send_json({"ok": True}, extra={"Set-Cookie": _cookie("", forget=True)})
             return
+        if path == "/consent":
+            if payload.get("agree") is not True:
+                self._fail(400, "Без согласия дневник не откроется.")
+                return
+            ACCOUNTS.agree(self.uid)
+            self._json({"ok": True, "version": CONSENT_VERSION})
+            return
+        if path == "/account/delete":
+            if payload.get("confirm") != ERASE_WORD:
+                self._fail(400, f"Чтобы удалить всё, впишите слово {ERASE_WORD}.")
+                return
+            _erase(self.uid)
+            self._send_json({"ok": True}, extra={"Set-Cookie": _cookie("", forget=True)})
+            return
 
         key = self._user_key()
         if path == "/say":
@@ -758,6 +825,11 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError as exc:
                 self._fail(400, str(exc))
                 return
+            if MODE == "server":
+                refusal = limits.may_parse(self.uid)
+                if refusal:
+                    self._fail(429, refusal, retry=60)
+                    return
             self._json(_say(key, text, ring, days, since))
         elif path == "/summary":
             # Выводы дописываются в ленту, то есть меняют состояние. Такое
@@ -772,6 +844,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/weather":
             # Запрос ходит в сеть за погодой, а не только читает готовое,
             # поэтому POST: чужая страница не должна дёргать его картинкой.
+            if MODE == "server" and not WEATHER_LIMIT.allow(self.uid):
+                self._fail(429, "Погоду спрашивали слишком часто, попробуйте через час.",
+                           retry=3600)
+                return
             self._json(_weather_today(key))
         elif path == "/food":
             self._json(_food_step(key, payload, _seq(payload.get("since"))))
@@ -797,6 +873,9 @@ class Handler(BaseHTTPRequestHandler):
         попытке, удачной или нет по сроку: второй раз по той же ссылке не
         войти никому, в том числе тому, кто подсмотрел её в переписке.
         """
+        if not LOGIN_LIMIT.allow(self._client_ip()):
+            self._fail(429, "Слишком много попыток входа. Подождите минуту.", retry=60)
+            return
         uid = ACCOUNTS.redeem_login(payload.get("token"))
         if uid is None:
             self._fail(401, "Ссылка не сработала: она живёт десять минут и открывается "
@@ -826,6 +905,40 @@ class Handler(BaseHTTPRequestHandler):
             return False
         self.uid, self.sid = uid, sid
         return True
+
+    def _consented(self, path: str) -> bool:
+        """
+        К дневнику - только с согласием на нынешний текст. Без него открыты
+        лишь экран согласия, выход и удаление себя.
+        """
+        if MODE != "server" or path in NO_CONSENT or ACCOUNTS.has_consent(self.uid):
+            return True
+        self._drain()
+        self._send_json({"ok": False, "consent": True,
+                         "error": "Сначала подтвердите согласие на обработку данных."}, 403)
+        return False
+
+    def _client_ip(self) -> str:
+        """
+        Адрес человека для потолка входов. Заголовкам X-Real-IP и
+        X-Forwarded-For верим, только если запрос пришёл из частной сети -
+        это nginx-proxy в общей сети docker. Пришёл напрямую из интернета -
+        заголовки мог написать кто угодно, берём адрес соединения.
+        """
+        peer = self.client_address[0]
+        try:
+            trusted = ipaddress.ip_address(peer).is_private
+        except ValueError:
+            trusted = False
+        if trusted:
+            real = (self.headers.get("X-Real-IP") or "").strip()
+            if real:
+                return real
+            # nginx дописывает адрес клиента в конец списка - ему и верим
+            forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
+            if forwarded:
+                return forwarded
+        return peer
 
     def _session_cookie(self) -> str:
         """
@@ -960,14 +1073,16 @@ class Handler(BaseHTTPRequestHandler):
             return None
         return payload
 
-    def _fail(self, code: int, reason: str) -> None:
+    def _fail(self, code: int, reason: str, retry: int = 0) -> None:
         """
         Отказ с понятной причиной в теле. В строку статуса русский текст
         писать нельзя: она уходит в latin-1 и запрос падает на кодировке.
+        retry - через сколько секунд можно снова (для 429).
         """
         self._send(json.dumps({"ok": False, "error": reason},
                               ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8", code)
+                   "application/json; charset=utf-8", code,
+                   {"Retry-After": str(retry)} if retry else None)
 
     def log_message(self, *args):
         pass
@@ -1098,6 +1213,62 @@ def _checked(payload: dict) -> tuple[str, dict | None, int, int]:
     return text, ring, days, since
 
 
+def privacy() -> bytes:
+    """
+    Политика и текст согласия. ЧЕРНОВИК: оператор и реквизиты не определены,
+    текст не проверен юристом. Оператор подставляется из MIRA_OPERATOR; пока
+    переменной нет, на странице так и стоит пропуск, а не выдуманное имя.
+    """
+    text = (Path(__file__).parent / "privacy.html").read_text(encoding="utf-8")
+    operator = html.escape(OPERATOR) if OPERATOR else "[оператор уточняется]"
+    return (text.replace("{OPERATOR}", operator)
+                .replace("{CONSENT_VERSION}", html.escape(CONSENT_VERSION))
+                .replace("{RETENTION_DAYS}", str(RETENTION_DAYS))
+                .encode("utf-8"))
+
+
+def _erase(user_id: int) -> None:
+    """
+    Удалить человека целиком. Через бота, если он есть: у бота в памяти ещё
+    расписание напоминаний, и его тоже надо почистить.
+    """
+    if SERVICE_BOT is not None:
+        SERVICE_BOT.erase(user_id)
+    else:
+        ACCOUNTS.erase(user_id, STORE)
+
+
+# Как часто проверять срок хранения. Срок - месяцы, сутки точности хватает.
+SWEEP_EVERY = 24 * 60 * 60
+
+
+def sweep_idle(now: float | None = None) -> int:
+    """
+    Удалить аккаунты, в которые не входили и не писали дольше срока хранения.
+    Удаление полное, как по кнопке «Удалить всё». Возвращает, сколько удалено;
+    в журнал - только число, без номеров людей.
+    """
+    gone = ACCOUNTS.idle(RETENTION_DAYS, now)
+    for user_id in gone:
+        _erase(user_id)
+    return len(gone)
+
+
+def _sweeping(stop: threading.Event | None = None) -> None:
+    """Фоновая чистка по сроку: сразу при запуске и потом раз в сутки."""
+    while True:
+        try:
+            count = sweep_idle()
+            if count:
+                print(f"Срок хранения: удалено неактивных аккаунтов - {count}")
+        except Exception as exc:
+            print(f"Чистка по сроку не прошла: {type(exc).__name__}")
+        if stop is None:
+            time.sleep(SWEEP_EVERY)
+        elif stop.wait(SWEEP_EVERY):
+            return
+
+
 def _check_server_settings() -> None:
     """
     Режим server без своего адреса или без базы не запускаем: без адреса
@@ -1143,6 +1314,7 @@ def main() -> None:
         # заводит хранилище с правами 0600.
         os.chmod(DB_FILE.parent, 0o700)
         _start_service_bot()
+        threading.Thread(target=_sweeping, daemon=True).start()
         print(f"Мира в режиме server: https://{PUBLIC_HOST}, слушаю {HOST}:{PORT}")
     else:
         # Перенос старого города делаем при запуске программы, а не при

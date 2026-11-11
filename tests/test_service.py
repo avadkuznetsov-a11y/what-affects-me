@@ -17,7 +17,7 @@ import pytest
 import web.server as server
 import wam.accounts as accounts_module
 from demo.generate import build
-from wam import dialog, weather
+from wam import dialog, limits, llm, weather
 from wam.accounts import COOKIE, Accounts, csrf_for, user_key
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
@@ -106,6 +106,9 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "STORE", store)
     monkeypatch.setattr(server, "ACCOUNTS", accounts)
     monkeypatch.setattr(server, "PARSER", dialog.Parser())
+    monkeypatch.setattr(server, "SERVICE_BOT", None)
+    monkeypatch.setattr(server, "LOGIN_LIMIT", limits.Limiter(10, 60))
+    monkeypatch.setattr(server, "WEATHER_LIMIT", limits.Limiter(10, 3600))
     # Город проверяется геокодингом, погода - запросом в сеть. В тестах сети
     # нет: город «находится» всегда, погоды нет никогда.
     monkeypatch.setattr(weather, "coords", lambda city: (55.75, 37.62))
@@ -392,3 +395,251 @@ def test_old_user_diary_is_not_swept_as_a_guest(tmp_path):
     again._guests[user_key(7)] = 0.0             # даже если попал в гости по ошибке
     again._forget_guests()
     assert again.get(user_key(7)).city == "Москва"
+
+
+# ── согласие ──────────────────────────────────────────────────────────────
+
+def test_without_consent_the_diary_is_closed(service):
+    alice = service.person(1, consent=False)
+    state = alice.state()
+    assert state["consent_needed"] and "messages" not in state and "city" not in state
+    for path in ("/say", "/summary", "/reset", "/city", "/weather", "/food"):
+        code, _, body = alice.post(path, {"text": "Пил кофе"})
+        assert code == 403 and json.loads(body)["consent"], path
+    assert alice.get("/export")[0] == 403
+    assert not service.store.get(user_key(1)).timeline.days
+
+
+def test_consent_opens_the_diary(service):
+    alice = service.person(1, consent=False)
+    assert alice.post("/consent", {"agree": False})[0] == 400
+    assert alice.post("/consent", {"agree": True})[0] == 200
+    assert service.accounts.has_consent(1)
+    assert alice.post("/say", {"text": "Пил кофе, с утра тревога"})[0] == 200
+    assert "кофе" in _texts(alice.state())
+
+
+def test_consent_is_own_and_needs_csrf(service):
+    alice, bob = service.person(1, consent=False), service.person(2, consent=False)
+    assert alice.post("/consent", {"agree": True}, **{"X-CSRF": ""})[0] == 403
+    alice.post("/consent", {"agree": True})
+    assert service.accounts.has_consent(1) and not service.accounts.has_consent(2)
+    assert bob.post("/say", {"text": "Пил кофе"})[0] == 403
+
+
+def test_new_consent_text_asks_again(service, monkeypatch):
+    alice = service.person(1)
+    assert "messages" in alice.state()
+    monkeypatch.setattr(accounts_module, "CONSENT_VERSION", "новая версия")
+    assert alice.state()["consent_needed"]
+
+
+def test_privacy_page_is_open_and_marked_as_draft(service, monkeypatch):
+    code, _, page = service.request("GET", "/privacy")
+    assert code == 200 and "черновик" in page.lower()
+    assert "[оператор уточняется]" in page and "{OPERATOR}" not in page
+    assert accounts_module.CONSENT_VERSION in page
+    assert "Telegram" in page and "365" in page
+    monkeypatch.setattr(server, "OPERATOR", "ООО <Проба>")
+    page = service.request("GET", "/privacy")[2]
+    assert "ООО &lt;Проба&gt;" in page
+
+
+# ── удаление ──────────────────────────────────────────────────────────────
+
+def _left(store, user_id) -> int:
+    """Сколько строк о человеке осталось во всех таблицах базы вместе."""
+    key = user_key(user_id)
+    queries = (
+        ("SELECT COUNT(*) FROM users WHERE user_id=?", user_id),
+        ("SELECT COUNT(*) FROM sessions WHERE user_id=?", user_id),
+        ("SELECT COUNT(*) FROM login_tokens WHERE user_id=?", user_id),
+        ("SELECT COUNT(*) FROM reminders WHERE chat_id=?", user_id),
+        ("SELECT COUNT(*) FROM chats WHERE diary=?", key),
+        ("SELECT COUNT(*) FROM diaries WHERE diary=?", key),
+        ("SELECT COUNT(*) FROM days WHERE diary=?", key),
+        ("SELECT COUNT(*) FROM facts WHERE diary=?", key),
+    )
+    with store.storage.atomic() as db:
+        return sum(db.execute(sql, (arg,)).fetchone()[0] for sql, arg in queries)
+
+
+def _fill(service, who):
+    who.post("/say", {"text": "Пил кофе, с утра тревога"})
+    who.post("/city", {"city": "Москва"})
+    service.store.attach(who.user_id, user_key(who.user_id))
+    service.accounts.issue_login(who.user_id)
+    with service.store.storage.atomic() as db:
+        db.execute("INSERT INTO reminders(chat_id, at) VALUES(?, 1200)", (who.user_id,))
+
+
+def test_delete_needs_the_word(service):
+    alice = service.person(1)
+    assert alice.post("/account/delete", {"confirm": "да"})[0] == 400
+    assert alice.post("/account/delete", {})[0] == 400
+    assert service.accounts.user(1) is not None
+
+
+def test_delete_wipes_every_table_and_only_own(service):
+    alice, bob = service.person(1), service.person(2)
+    _fill(service, alice)
+    _fill(service, bob)
+    assert _left(service.store, 1) >= 8
+    bob_before = _left(service.store, 2)
+
+    code, headers, _ = alice.post("/account/delete", {"confirm": "УДАЛИТЬ"})
+    assert code == 200 and "Max-Age=0" in headers["Set-Cookie"]
+    assert _left(service.store, 1) == 0
+    assert alice.get("/state")[0] == 401
+    assert _left(service.store, 2) == bob_before
+    assert "кофе" in _texts(bob.state())
+
+
+def test_delete_works_without_consent(service):
+    alice = service.person(1, consent=False)
+    assert alice.post("/account/delete", {"confirm": "УДАЛИТЬ"})[0] == 200
+    assert service.accounts.user(1) is None
+
+
+# ── срок хранения ─────────────────────────────────────────────────────────
+
+def test_idle_accounts_are_swept_whole(service):
+    alice, bob, carol = service.person(1), service.person(2), service.person(3)
+    _fill(service, alice)
+    _fill(service, bob)
+    year = 366 * 24 * 3600
+    with service.store.storage.atomic() as db:
+        db.execute("UPDATE users SET created_at=?, active_at=?", (0, 0))
+        db.execute("UPDATE diaries SET seen=0")
+        # Боб не заходил год, но вчера писал в дневник через бота
+        db.execute("UPDATE diaries SET seen=? WHERE diary=?",
+                   (time.time() - 24 * 3600, user_key(2)))
+    assert sorted(service.accounts.idle(365)) == [1, 3]
+    assert server.sweep_idle() == 2
+    assert _left(service.store, 1) == 0 and _left(service.store, 3) == 0
+    assert service.accounts.user(2) is not None
+    assert "кофе" in _texts(bob.state())
+    # заход на страницу продлевает срок
+    assert service.accounts.idle(365, now=time.time() + year) == [2]
+
+
+def test_login_counts_as_activity(service):
+    service.person(1)
+    with service.store.storage.atomic() as db:
+        db.execute("UPDATE users SET created_at=0, active_at=0")
+    assert service.accounts.idle(365) == [1]
+    service.accounts.open_session(1)
+    assert service.accounts.idle(365) == []
+
+
+# ── лимиты ────────────────────────────────────────────────────────────────
+
+def test_say_is_limited_per_minute(service):
+    alice, bob = service.person(1), service.person(2)
+    codes = [alice.post("/say", {"text": "Пил кофе"})[0] for _ in range(21)]
+    assert codes[:20] == [200] * 20
+    code, headers, body = alice.post("/say", {"text": "Пил кофе"})
+    assert code == 429 and headers["Retry-After"] == "60"
+    assert json.loads(body)["error"]
+    assert bob.post("/say", {"text": "Пил кофе"})[0] == 200      # у другого свой счёт
+
+
+def test_say_is_limited_per_day(service, monkeypatch):
+    monkeypatch.setattr(limits, "SAY_PER_DAY", limits.Limiter(3, 24 * 3600))
+    alice = service.person(1)
+    codes = [alice.post("/say", {"text": "Пил кофе"})[0] for _ in range(4)]
+    assert codes == [200, 200, 200, 429]
+
+
+def test_daily_limit_comes_from_environment(monkeypatch):
+    monkeypatch.setenv("MIRA_DAILY_LIMIT", "42")
+    assert limits._daily_limit() == 42
+    monkeypatch.setenv("MIRA_DAILY_LIMIT", "чепуха")
+    assert limits._daily_limit() == 300
+
+
+def test_weather_is_limited_per_hour(service):
+    alice = service.person(1)
+    codes = [alice.post("/weather")[0] for _ in range(11)]
+    assert codes[:10] == [200] * 10 and codes[10] == 429
+
+
+def test_login_is_limited_per_address(service):
+    def attempt(ip=None):
+        sent = {"Origin": ORIGIN, "Content-Type": "application/json"}
+        if ip:
+            sent["X-Real-IP"] = ip
+        return service.request("POST", "/auth/login", {"token": "made-up"}, sent)[0]
+
+    codes = [attempt("203.0.113.5") for _ in range(11)]
+    assert codes[:10] == [401] * 10 and codes[10] == 429
+    # другой адрес за тем же nginx-proxy - свой счёт
+    assert attempt("203.0.113.6") == 401
+
+
+# ── модель ────────────────────────────────────────────────────────────────
+
+def test_model_error_text_is_not_shown_to_everyone(service):
+    alice = service.person(1)
+    server.PARSER.last_error = "could not convert string to float: 'болит сердце'"
+    try:
+        state = alice.state()
+    finally:
+        server.PARSER.last_error = ""
+    assert state["model_error"] and "сердце" not in state["model_error"]
+
+
+class _Answer:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def read(self):
+        return self.body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+def test_yandexgpt_asks_not_to_log_and_uses_new_model(monkeypatch):
+    import urllib.request
+
+    sent = []
+
+    def fake_urlopen(request, timeout=None, context=None):
+        sent.append(request)
+        return _Answer(json.dumps({"result": {"alternatives": [
+            {"message": {"text": "{}"}}]}}).encode())
+
+    monkeypatch.setenv("YANDEX_API_KEY", "key-for-test")
+    monkeypatch.setenv("YANDEX_FOLDER_ID", "folder-for-test")
+    monkeypatch.delenv("YANDEX_MODEL", raising=False)
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    assert llm.yandexgpt_complete()("разбери") == "{}"
+    request = sent[0]
+    assert request.get_header("X-data-logging-enabled") == "false"
+    assert json.loads(request.data)["modelUri"] == "gpt://folder-for-test/yandexgpt-5.1/latest"
+
+    monkeypatch.setenv("YANDEX_MODEL", "yandexgpt/rc")
+    llm.yandexgpt_complete()("разбери")
+    assert json.loads(sent[1].data)["modelUri"] == "gpt://folder-for-test/yandexgpt/rc"
+
+
+def test_server_mode_allows_only_yandexgpt(monkeypatch):
+    for name in ("GIGACHAT_TOKEN", "YANDEX_API_KEY", "YANDEX_FOLDER_ID"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "key-for-test")
+    monkeypatch.delenv("WAM_ENGINE", raising=False)
+    assert llm.available_engine(only=("YandexGPT",))[0] == "правила"
+    monkeypatch.setenv("WAM_ENGINE", "claude")
+    with pytest.raises(RuntimeError):
+        llm.available_engine(only=("YandexGPT",))
+    # назван, но ключа нет - сервис работает на правилах, а не падает
+    monkeypatch.setenv("WAM_ENGINE", "yandex")
+    assert llm.available_engine(only=("YandexGPT",))[0] == "правила"
+    monkeypatch.setenv("YANDEX_API_KEY", "key-for-test")
+    monkeypatch.setenv("YANDEX_FOLDER_ID", "folder-for-test")
+    assert llm.available_engine(only=("YandexGPT",))[0] == "YandexGPT"

@@ -1,0 +1,98 @@
+<!doctype html>
+<!--
+  ЧЕРНОВИК политики обработки персональных данных и текста согласия.
+  Оператор и реквизиты не определены, юрист текст не проверял. {OPERATOR}
+  подставляет web/server.py из переменной MIRA_OPERATOR; {CONSENT_VERSION} -
+  версия согласия из wam/accounts.py; {RETENTION_DAYS} - срок хранения из
+  MIRA_RETENTION_DAYS. Поменяли смысл текста - поменяйте CONSENT_VERSION, и
+  каждый при следующем входе согласится заново.
+-->
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Мира - как мы обращаемся с данными</title>
+<style>
+ :root{--ink:#1d2024;--text:#4a5058;--soft:#6a7079;--line:#c9ced6;--rule:#d8dce2;
+  --accent:#3d4f7c;--bg:#fff;--sheet:#eceef1;--head:#f6f7f9;
+  --sans:"Golos Text","Helvetica Neue",Helvetica,Arial,sans-serif}
+ *{box-sizing:border-box}
+ body{margin:0;background:var(--sheet);color:var(--ink);font:15px/1.6 var(--sans)}
+ .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:20px 24px 0;
+  max-width:760px;margin:0 auto}
+ .brand{font-size:21px;font-weight:600;color:var(--ink);text-decoration:none}
+ .tagline{color:var(--soft);font-size:14px}
+ main{max-width:760px;margin:0 auto;padding:18px 24px 40px}
+ .block{background:var(--bg);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+ .head{padding:12px 16px;background:var(--head);border-bottom:1px solid var(--rule)}
+ .head h1{margin:0;font-size:17px;font-weight:600}
+ .body{padding:16px 18px}
+ h2{margin:22px 0 6px;font-size:15px;font-weight:600}
+ p,li{color:var(--text)}
+ p{margin:0 0 10px}
+ ul{margin:0 0 10px;padding-left:20px}
+ .draft{margin:0 0 14px;padding:9px 11px;background:#faf3f3;border:1px solid #ecdada;
+  border-radius:8px;font-size:13.5px;color:#8a3d3d}
+ .note{font-size:13px;color:var(--soft)}
+ a{color:var(--accent)}
+ @media (max-width:860px){.top{padding:12px 16px 0}main{padding:14px 16px 32px}}
+</style></head><body>
+
+<header class="top">
+  <a class="brand" href="/">Мира</a>
+  <div class="tagline">дневник, который ищет причины</div>
+</header>
+
+<main>
+  <section class="block">
+    <div class="head"><h1>Как мы обращаемся с вашими данными</h1></div>
+    <div class="body">
+      <p class="draft">Это черновик. Оператор и реквизиты уточняются, текст ещё не
+        проверен юристом.</p>
+
+      <h2>Кто отвечает за данные</h2>
+      <p>Оператор персональных данных: {OPERATOR}.</p>
+
+      <h2>Что мы храним</h2>
+      <ul>
+        <li>Ваш номер и имя в Telegram - по ним бот узнаёт вас и пускает в дневник.</li>
+        <li>То, что вы рассказываете Мире: сон, самочувствие, настроение, привычки,
+          еду, показания кольца или часов. Это данные о здоровье.</li>
+        <li>Город, если вы его назвали, - для погоды.</li>
+        <li>Время напоминаний и отметку о вашем согласии.</li>
+      </ul>
+      <p>Паролей нет: вход только по одноразовой ссылке от бота.</p>
+
+      <h2>Зачем</h2>
+      <p>Только чтобы вести ваш дневник: записывать, что вы рассказали, искать, что
+        влияет на ваше самочувствие, и напоминать записать день. Мы не продаём и не
+        передаём данные для рекламы.</p>
+
+      <h2>Кто ещё их видит</h2>
+      <ul>
+        <li>Telegram. Сообщения боту идут через Telegram - это иностранный сервис, и
+          всё, что вы пишете боту, проходит через его серверы.</li>
+        <li>YandexGPT. Текст вашей записи уходит в модель Яндекса, чтобы разобрать
+          его на факты. Мы просим Яндекс не сохранять эти запросы.</li>
+        <li>Сервис погоды получает только название города, без ваших записей.</li>
+      </ul>
+
+      <h2>Сколько храним</h2>
+      <p>Пока вы пользуетесь дневником. Если вы не входили и ничего не записывали
+        {RETENTION_DAYS} дней, аккаунт удаляется целиком сам. Из резервных копий
+        данные уходят в течение 14 дней.</p>
+
+      <h2>Как забрать и удалить</h2>
+      <ul>
+        <li>Скачать всё, что вы записали: на странице дневника, блок «Мои данные».</li>
+        <li>Удалить всё: кнопка «Удалить всё» там же или команда /delete в боте.
+          Удаляются записи, напоминания, вход и сам аккаунт. Вернуть их нельзя.</li>
+      </ul>
+
+      <h2>Согласие</h2>
+      <p>Нажимая «Согласен», вы разрешаете обрабатывать ваши данные, включая данные о
+        здоровье, для целей и на сроки, описанные выше. Согласие можно отозвать в любой
+        момент: удалите свои данные кнопкой или командой /delete.</p>
+      <p class="note">Версия текста: {CONSENT_VERSION}.</p>
+    </div>
+  </section>
+</main>
+</body></html>

@@ -38,6 +38,7 @@ from datetime import date, datetime
 from wam import dialog
 from wam.accounts import user_key
 from wam.diary import DiaryStore, looks_like_code
+from wam import limits
 from wam.limits import Limiter
 from wam.llm import ssl_context
 from wam.storage import DIARY_FILE
@@ -373,6 +374,10 @@ class TelegramBot:
             return self.set_reminder(chat_id, text.split(maxsplit=1)[1:])
         if not text:
             return "Пока понимаю только текст и голосовые. Напишите пару фраз о дне."
+        # Потолок разбора общий со страницей: человек один, бюджет на модель один
+        refusal = limits.may_parse(chat_id)
+        if refusal:
+            return refusal
 
         diary = self._diary_of(chat_id)
         messages = dialog.step(diary, text, links=diary.links(),

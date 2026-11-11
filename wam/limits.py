@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import deque
@@ -51,3 +52,33 @@ class Limiter:
         for who in [who for who, times in self._seen.items()
                     if not times or times[-1] <= edge]:
             del self._seen[who]
+
+
+# ── разбор речи моделью ──────────────────────────────────────────────────
+# Решение владельца от 11.11.2026: не больше 20 разборов в минуту и 300 в
+# сутки на человека, в сумме со страницы и из бота. Суточный потолок меняется
+# переменной MIRA_DAILY_LIMIT. Сутки считаем скользящими, а не календарными:
+# так нет полуночи, после которой скрипт получает разом весь новый запас.
+def _daily_limit() -> int:
+    try:
+        return max(1, int(os.environ.get("MIRA_DAILY_LIMIT", "") or 300))
+    except ValueError:
+        return 300
+
+
+SAY_PER_MINUTE = Limiter(20, 60)
+SAY_PER_DAY = Limiter(_daily_limit(), 24 * 60 * 60)
+
+
+def may_parse(user_id: int) -> str:
+    """
+    Можно ли разобрать ещё одну реплику человека. Пустая строка - можно;
+    иначе - что ему ответить. Суточный счёт трогаем только если минутный
+    пропустил: отказ по минуте не должен съедать суточный запас.
+    """
+    if not SAY_PER_MINUTE.allow(user_id):
+        return "Слишком много сообщений подряд. Подождите минуту и напишите снова."
+    if not SAY_PER_DAY.allow(user_id):
+        return ("На сегодня записей уже очень много, больше я сегодня не разберу. "
+                "Продолжим завтра.")
+    return ""
