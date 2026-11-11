@@ -104,6 +104,7 @@ def service(monkeypatch, tmp_path):
     store = DiaryStore(tmp_path / "mira.db")
     accounts = Accounts(store.storage)
     monkeypatch.setattr(server, "MODE", "server")
+    monkeypatch.setattr(server, "DEVICES", False)       # как в настоящем режиме server
     monkeypatch.setattr(server, "PUBLIC_HOST", HOST)
     monkeypatch.setattr(server, "STORE", store)
     monkeypatch.setattr(server, "ACCOUNTS", accounts)
@@ -130,6 +131,12 @@ def service(monkeypatch, tmp_path):
     yield Service(httpd.server_address[1], store, accounts)
     httpd.shutdown()
     httpd.server_close()
+
+
+@pytest.fixture
+def devices_on(monkeypatch):
+    """Кольцо и КБЖУ включены, как в режиме local: проверяем сам их путь."""
+    monkeypatch.setattr(server, "DEVICES", True)
 
 
 def _texts(state: dict) -> str:
@@ -349,7 +356,7 @@ def test_city_and_weather_are_separate(service, monkeypatch):
     assert json.loads(body)["city"] == "Москва" and asked == ["Москва"]
 
 
-def test_food_is_separate(service):
+def test_food_is_separate(service, devices_on):
     alice, bob = service.person(1), service.person(2)
     assert alice.post("/food", {"калории": 4000})[0] == 200
     assert service.store.get(user_key(1)).today().facts
@@ -915,7 +922,7 @@ def test_summary_takes_only_known_periods(service, monkeypatch):
     ("/food", {"калории": 2000}, 10),
     ("/city", {"city": "Москва"}, 10),
 ])
-def test_heavy_requests_are_limited_per_person(service, monkeypatch, path, body, limit):
+def test_heavy_requests_are_limited_per_person(service, devices_on, monkeypatch, path, body, limit):
     monkeypatch.setattr(server, "_summary_step", lambda *a, **k: {"ok": True})
     alice, bob = service.person(1), service.person(2)
     for _ in range(limit):
@@ -925,7 +932,7 @@ def test_heavy_requests_are_limited_per_person(service, monkeypatch, path, body,
     assert bob.post(path, body)[0] == 200             # потолок у каждого свой
 
 
-def test_food_takes_only_last_two_years(service):
+def test_food_takes_only_last_two_years(service, devices_on):
     from datetime import date, timedelta
     alice = service.person(1)
     today = date.today()
@@ -942,7 +949,7 @@ def test_food_takes_only_last_two_years(service):
     assert "двух лет" in json.loads(body)["error"]
 
 
-def test_food_respects_the_diary_ceiling(service, monkeypatch):
+def test_food_respects_the_diary_ceiling(service, devices_on, monkeypatch):
     from datetime import date, timedelta
     monkeypatch.setattr(server, "MAX_DIARY_DAYS", 3)
     alice = service.person(1)

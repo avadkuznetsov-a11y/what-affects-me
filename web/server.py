@@ -83,6 +83,16 @@ PERIODS: tuple[tuple[int, str], ...] = (
     (180, "полгода"),
 )
 
+# Кольцо и КБЖУ. В режиме local это стенд: ползунки кольца стоят на
+# придуманных значениях, чтобы показать, как показания приборов ложатся в
+# дневник. В режиме server настоящего кольца ни у кого нет, и придуманные
+# цифры записывались в настоящий дневник человека («качество сна 4.1 из 10
+# (с кольца)»). Решение владельца 11.11.2026: в server по умолчанию оба
+# источника выключены - сервер их показания не принимает, страница пишет
+# «пока не подключено». Включать вместе с настоящим подключением прибора или
+# с ручным вводом, подписанным «введено вручную», а не «с кольца».
+DEVICES = MODE != "server"
+
 # Речь разбирает модель, если для неё есть ключ в окружении. Ключей в
 # репозитории нет: у того, кто скачает код, будет работать разбор по правилам,
 # пока он не подставит свой ключ.
@@ -176,6 +186,7 @@ def page() -> bytes:
                 .replace("__PERIODS__", periods)
                 .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS))
                 .replace("__BOT__", BOT_NAME)
+                .replace("__DEVICES__", "1" if DEVICES else "")
                 # Есть ли у сервиса бот: без него страница не зовёт в Telegram
                 .replace("__TG__", "1" if SERVICE_BOT is not None else ""))
     return html.encode("utf-8")
@@ -1061,6 +1072,8 @@ class Handler(BaseHTTPRequestHandler):
                 if refusal:
                     self._fail(429, refusal, retry=60)
                     return
+            if not DEVICES:
+                ring = None         # кольцо не подключено: старая вкладка его ещё шлёт
             self._json(_say(key, text, ring, days, since))
         elif path == "/summary":
             # Выводы дописываются в ленту, то есть меняют состояние. Такое
@@ -1087,6 +1100,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(_weather_today(key))
         elif path == "/food":
+            if not DEVICES:
+                self._fail(403, "КБЖУ пока не подключено.")
+                return
             if not self._allowed(FOOD_LIMIT, "КБЖУ отправляли слишком часто, "
                                              "подождите минуту.", 60):
                 return

@@ -21,6 +21,7 @@ import re
 from datetime import date, timedelta
 from typing import Protocol
 
+from .questions import as_stored
 from .schema import DayRecord, Fact
 
 # ── Словарь нормализации ──────────────────────────────────────────────────
@@ -167,6 +168,25 @@ _WORD_NUMBERS = {
 # программу: её же берёт questions.apply_answer, иначе «мера или оценка»
 # решалось про одно число, а записывалось другое.
 SCORE_NUMBER = re.compile(r"\b(10|\d)\b")
+
+# Оценка, прямо названная по шкале: «6 из 10», «шесть из десяти», «8/10»,
+# «на 7 баллов». Человек называет её так, как спросили бы его самого: про
+# боль и тревогу - силу («шесть из десяти болит» - болит заметно), а не
+# самочувствие. Поэтому такую оценку переворачиваем во внутреннюю шкалу
+# (questions.as_stored), а оценку словами («ужасно», «отлично») - нет: она и
+# так про самочувствие.
+_TOLD_SCORE = re.compile(
+    r"\b(10|[0-9]|" + "|".join(name for name, value in _WORD_NUMBERS.items() if value <= 10)
+    + r")\s*(?:/\s*10\b|из\s*(?:10\b|десяти)|балл)")
+
+
+def told_score(fragment: str) -> float | None:
+    """Оценка, названная числом по шкале до десяти, - как её сказал человек."""
+    found = _TOLD_SCORE.search(fragment)
+    if found is None:
+        return None
+    word = found.group(1)
+    return float(word) if word.isdigit() else float(_WORD_NUMBERS[word])
 
 _ANY_WORD_NUMBER = re.compile(r"\b(?:" + "|".join(_WORD_NUMBERS) + r")\b")
 
@@ -423,7 +443,11 @@ class RuleExtractor:
             clause = clause_around(lowered, match.start())
             where = clause if clause else lowered
             shift = where.find(lowered[match.start():match.start() + 6])
-            score = _score_near(where, max(0, shift), metric=name)
+            told = told_score(where)
+            if told is None:
+                told = told_score(_next_clause_alone(lowered, match.start()))
+            score = (as_stored(name, told) if told is not None
+                     else _score_near(where, max(0, shift), metric=name))
             if score is None:
                 score = _NEGATIVE_BY_DEFAULT.get(name)
             if score is not None:
@@ -477,11 +501,13 @@ class LLMExtractor:
         "3. metrics - только из этого списка: качество сна, энергия, тревога, настроение, "
         "головная боль. Другие названия не придумывай.\n"
         "4. value у metrics - ЦЕЛОЕ число от 0 до 10, где 10 - отлично, 0 - хуже некуда. "
-        "Это относится и к тревоге: сильная тревога это 2, спокойный день это 9. "
+        "Кроме тревоги и головной боли: у них value - СИЛА, 0 - не было совсем, 10 - "
+        "сильнее некуда. «Голова болит шесть из десяти» - головная боль 6; сильная "
+        "тревога - 8, спокойный день - 1. "
         "Восемь часов сна это 10, четыре часа это 5.\n"
         "5. Про самочувствие люди говорят обиняками, и это тоже оценка: «вымотался», "
         "«хотелось спать», «еле дожил до вечера» - энергия 2; «всё валится из рук», «грустно» - "
-        "настроение 3; «места себе не находил» - тревога 2; «выспался», «бодрый» - энергия 8. "
+        "настроение 3; «места себе не находил» - тревога 8; «выспался», «бодрый» - энергия 8. "
         "Понимай такие слова, а не жди готовых оценок в баллах.\n"
         "6. Ничего не выдумывай: чего в записи нет, того нет в ответе. Но и не молчи там, "
         "где смысл понятен из обычной речи.\n"
@@ -551,7 +577,10 @@ class LLMExtractor:
             # и понимает «весело» или «выжат» лучше любого словаря.
             if value == 0 and not _mentioned(name, lowered):
                 continue
-            record.add(Fact("metric", name, value, "diary"))
+            # Тревогу и боль модель оценивает силой, как говорит человек
+            # (см. п. 4 подсказки): так она реже ошибается направлением, чем
+            # когда просили перевернуть самой. Во внутреннюю шкалу - здесь.
+            record.add(Fact("metric", name, as_stored(name, value), "diary"))
         for name in data.get("events", []):
             record.add(Fact("event", str(name).strip().lower(), 1.0, "diary"))
         return record
@@ -607,13 +636,30 @@ def clause_around(text: str, index: int) -> str:
     return text[left:right.start() if right else len(text)].strip()
 
 
+def _next_clause_alone(lowered: str, index: int) -> str:
+    """
+    Следующая мысль после той, где стоит слово, - если в ней нет своего
+    показателя. «Голова болит, где-то шесть из десяти»: оценка отделена
+    запятой, но относится к боли. А «голова болит, сон 7 из 10» - уже про сон.
+    """
+    end = _CLAUSE_BREAK.search(lowered, index)
+    if end is None:
+        return ""
+    following = clause_around(lowered, min(len(lowered), end.end() + 1))
+    if any(re.search(pattern, following) for pattern, _ in _METRIC_PATTERNS):
+        return ""
+    return following
+
+
 def _score_near(lowered: str, index: int, window: int = 60, metric: str = "") -> float | None:
     """Оценка состояния рядом с упоминанием: цифрой («сон на 3») или словом."""
     fragment = lowered[max(0, index - window):index + window]
 
-    digits = re.search(r"\b(10|[0-9])\s*(?:/\s*10|из\s*10|балл)", fragment)
-    if digits:
-        return float(digits.group(1))
+    # Оценку по шкале («6 из 10») вызывающий уже поискал в своей мысли (told_score);
+    # здесь окно шире, и в нём она тоже бывает - тогда та же шкала человека.
+    told = told_score(fragment)
+    if told is not None:
+        return as_stored(metric, told)
 
     # «спал 5 часов», «часов пять поспал» — это мера сна и только его:
     # рядом стоящая «тревога» не должна получить оценку из часов

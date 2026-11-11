@@ -249,3 +249,41 @@ def test_negation_after_the_habit():
     record = RULES.extract("ел рыбу и овощи, сладкого не было", date.today())
     assert record.factor("сладкое") == 0.0
     assert record.factor("рыба") == 1.0
+
+
+# ── оценка по шкале у боли и тревоги ─────────────────────────────────────
+# Живой прогон 11.11.2026: «Да, где-то шесть из десяти болит» записалось как
+# «головная боль 4 из 10». Человек называет СИЛУ боли, а внутри шкала «больше
+# - лучше»: число надо перевернуть ровно один раз - и правилами, и моделью.
+
+def _told(record, name):
+    from wam.questions import as_told
+    return as_told(name, record.metric(name))
+
+
+def test_pain_named_on_a_scale_keeps_its_number():
+    for said in ("голова болит 6 из 10", "голова болит где-то шесть из десяти",
+                 "голова болит, где-то шесть из десяти", "голова болит 6/10"):
+        record = RuleExtractor().extract(said, date(2026, 11, 11))
+        assert _told(record, "головная боль") == 6, said
+
+
+def test_anxiety_on_a_scale_keeps_its_number_and_sleep_is_not_turned():
+    record = RuleExtractor().extract("тревога восемь из десяти, сон 7 из 10",
+                                     date(2026, 11, 11))
+    assert _told(record, "тревога") == 8
+    assert record.metric("качество сна") == 7
+
+
+def test_model_gives_pain_as_strength_and_it_is_shown_as_said():
+    from wam.dialog import facts_note
+
+    def fake(_prompt):
+        return '{"factors": [], "metrics": [{"name": "головная боль", "value": 6}], "events": []}'
+
+    record = LLMExtractor(fake).extract("Да, где-то шесть из десяти болит", date(2026, 11, 11),
+                                        context="Мира: Сколько чашек кофе и во сколько "
+                                                "была последняя? Человек: голова болит")
+    assert record.metric("головная боль") == 4          # внутри: больше - лучше
+    assert "головная боль 6 из 10" in facts_note(record.facts)
+    assert "СИЛА" in LLMExtractor.PROMPT

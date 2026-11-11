@@ -7,6 +7,7 @@
 же, что в test_service_bot.py.
 """
 import hashlib
+from pathlib import Path
 import json
 import re
 import sqlite3
@@ -513,3 +514,44 @@ def test_normal_code_takes_only_full_codes():
     assert normal_code("ABCD-EFGH-JKMN-PQR") == ""
     assert normal_code("x" * 1000) == ""
     assert normal_code(None) == ""
+
+
+# ── кольцо и КБЖУ на сервере ──────────────────────────────────────────────
+# Живой прогон 11.11.2026: ползунки кольца стояли на придуманных значениях, и
+# «качество сна 4.1 из 10 (с кольца)» ложилось в настоящий дневник человека.
+
+def test_ring_readings_do_not_reach_a_real_diary(service):
+    who, _ = newcomer(service)
+    status, _, body = who.post("/say", {"text": "Пил кофе вечером",
+                                        "ring": {"sleep_score": 41, "stress_level": 72,
+                                                 "steps": 3000}})
+    assert status == 200, body
+    text = _texts(who.state()).lower()
+    assert "с кольца" not in text and "кофе" in text
+    diary = service.store.get(user_key(who.user_id))
+    with diary.lock:
+        sources = {fact.source for record in diary.timeline.days for fact in record.facts}
+    assert sources <= {"diary"}
+
+
+def test_food_numbers_are_not_connected_on_the_server(service):
+    who, _ = newcomer(service)
+    status, _, body = who.post("/food", {"калории": 2000})
+    assert status == 403 and "не подключено" in json.loads(body)["error"]
+
+
+def test_page_shows_ring_and_food_as_not_connected(service):
+    _, _, page = service.request("GET", "/")
+    assert "const DEVICES = '' === '1'" in page
+
+
+def test_server_mode_starts_with_ring_and_food_off(tmp_path):
+    import os
+    import subprocess
+    import sys
+    env = {**os.environ, "MIRA_MODE": "server", "MIRA_DB": str(tmp_path / "m.db"),
+           "WAM_ENGINE": "правила"}
+    env.pop("TELEGRAM_TOKEN", None)
+    out = subprocess.run([sys.executable, "-c", "import web.server as s; print(s.DEVICES)"],
+                         env=env, capture_output=True, text=True, cwd=Path(__file__).parent.parent)
+    assert out.stdout.strip() == "False", out.stderr

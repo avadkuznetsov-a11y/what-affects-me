@@ -380,7 +380,7 @@
            развёрнутым, панель была простынёй: поля, кнопки и серые абзацы шли
            подряд, и было не видно, где кончается один источник. -->
       <div class="sources">
-        <details class="src" open>
+        <details class="src" id="src-ring" open>
           <summary><b>Умное кольцо Sber</b><i class="chev"></i><span class="st on">подключено</span></summary>
           <div class="in ring">
             <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
@@ -390,7 +390,7 @@
           </div>
         </details>
 
-        <details class="src">
+        <details class="src" id="src-food">
           <summary><b>Еда</b><span class="sub">КБЖУ</span><i class="chev"></i><span class="st on">подключено</span></summary>
           <div class="in kbju">
             <div class="fields">
@@ -545,9 +545,14 @@
 <script>
 // Источники рисуются из одного списка одним шаблоном: когда появится общий
 // реестр источников, сюда встанет его список, а разметку менять не придётся.
+// Кольцо и КБЖУ числами - в режиме local стенд с придуманными значениями. На
+// сервере они выключены (DEVICES в web/server.py): придуманные цифры кольца
+// ложились в настоящий дневник человека. Там они стоят в списке «Пока не
+// подключено», а их строки с ползунками и полями спрятаны.
+const DEVICES = '__DEVICES__' === '1';
 const SOURCES = [
-  {name: 'Умное кольцо Sber', note: 'сон, стресс, шаги', ready: true, ring: true},
-  {name: 'Еда', note: 'словами в рассказе и числами КБЖУ', ready: true, food: true},
+  {name: 'Умное кольцо Sber', note: 'сон, стресс, шаги', ready: DEVICES, ring: DEVICES},
+  {name: 'Еда числами', note: 'КБЖУ за день', ready: DEVICES, food: DEVICES},
   {name: 'Погода и город', note: 'давление, температура, облачность', weather: true},
   {name: 'Apple Health', note: 'разбор написан, подключение в программе', ready: false},
   {name: 'Health Connect', note: 'для Android, тот же формат', ready: false},
@@ -563,6 +568,8 @@ function drawSources(){
   // Скрипт рисует только то, чего пока нет: список коротких строк внизу.
   const box = document.getElementById('sources');
   box.innerHTML = '';
+  document.getElementById('src-ring').hidden = !DEVICES;
+  document.getElementById('src-food').hidden = !DEVICES;
   const head = document.createElement('div');
   head.className = 'h';
   head.textContent = 'Пока не подключено';
@@ -890,11 +897,12 @@ async function send(){
   field.value = '';
   document.getElementById('send').disabled = true;
 
-  const ring = {
+  // Без подключённого кольца его показания не отправляем вовсе
+  const ring = DEVICES ? {
     sleep_score: +document.getElementById('sleep').value,
     stress_level: +document.getElementById('stress').value,
     steps: +document.getElementById('steps').value
-  };
+  } : null;
   try {
     const days = +document.getElementById('days').value;
     // since - что страница уже показала. Без него сообщение из чата, пришедшее
