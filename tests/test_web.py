@@ -292,7 +292,7 @@ def test_message_from_the_chat_after_the_answer_is_not_lost(monkeypatch, site):
         return messages
 
     monkeypatch.setattr(server.dialog, "step", slipped)
-    answer = server._say("Пил кофе", None, server.DEFAULT_DAYS)
+    answer = server._say(server.WEB_KEY, "Пил кофе", None, server.DEFAULT_DAYS)
 
     assert answer["seq"] == answer["messages"][-1]["seq"]
     assert answer["messages"][-1]["text"] == "из чата"

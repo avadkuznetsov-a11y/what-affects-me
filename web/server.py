@@ -7,6 +7,11 @@
 Человек пишет про свой день, программа отвечает: что записала, чего не хватает
 и что уже известно. Когда данных достаточно, показывает выводы. Сервер слушает
 только 127.0.0.1 и наружу ничего не отдаёт.
+
+Это режим по умолчанию, MIRA_MODE=local: один человек на своей машине, один
+дневник, без входа. MIRA_MODE=server - сервис для многих людей: у каждого свой
+дневник, вход по ссылке от бота, согласие, удаление данных. Чем режимы
+отличаются, расписано в docs/PLAN_SERVER.md и в README.
 """
 from __future__ import annotations
 
@@ -23,16 +28,35 @@ from demo.generate import build
 from wam import dialog, export, food, weather
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
-from wam.storage import DIARY_FILE
+from wam import storage
 from wam.experiments import Experiment, can_try, evaluate
 from wam.insights import find_links
 from wam.llm import available_engine
 from wam.phrases import basis, days_count, next_step, period, say
 from wam.questions import day_name
 
-HOST, PORT = "127.0.0.1", 8765
+# Режим читаем один раз при запуске. Неизвестное слово - ошибка сразу: молча
+# поднять сервис для многих людей в режиме «один человек без входа» значит
+# открыть все дневники всем.
+MODE = os.environ.get("MIRA_MODE", "").strip().lower() or "local"
+if MODE not in ("local", "server"):
+    raise SystemExit(f"MIRA_MODE: ожидается local или server, а не «{MODE}»")
+
+# Адрес, под которым сервис виден людям. Только по нему сверяем Host и Origin:
+# в режиме server страница приходит не с 127.0.0.1, а через nginx-proxy.
+PUBLIC_HOST = os.environ.get("MIRA_PUBLIC_HOST", "").strip().lower()
+
+# Путь к базе. На сервере база лежит в смонтированном каталоге data, у
+# человека на машине - рядом с программой, как и раньше. Путь по умолчанию
+# берём из модуля, а не копией: тесты подменяют его на временный.
+DB_FILE = Path(os.environ["MIRA_DB"]) if os.environ.get("MIRA_DB") else storage.DIARY_FILE
+
+# В контейнере слушаем все адреса: снаружи до порта дотягивается только
+# nginx-proxy из общей сети docker, сам порт наружу не опубликован.
+HOST = "0.0.0.0" if MODE == "server" else "127.0.0.1"
+PORT = 8765
 DEFAULT_DAYS = 120
-WEB_KEY = "web"          # ключ дневника, который видит страница
+WEB_KEY = "web"          # ключ дневника страницы в режиме local
 
 # Сроки дневника, которые можно выбрать на странице. Список один на программу:
 # страница строит из него выпадающий список, а сервер теми же словами называет
@@ -54,7 +78,7 @@ PARSER = dialog.Parser(ENGINE_NAME, _COMPLETE)
 # Дневник один на процесс: то, что человек написал боту в Telegram, видно на
 # странице, и наоборот. Лежит он в файле рядом с программой и переживает
 # перезапуск - человек ведёт дневник неделями.
-STORE = DiaryStore(DIARY_FILE)
+STORE = DiaryStore(DB_FILE)
 
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
 MAX_BODY = 64 * 1024
@@ -271,7 +295,7 @@ class TelegramRunner:
 RUNNER = TelegramRunner(STORE)
 
 
-def _say(text: str, ring: dict | None, days: int, since: int = 0) -> dict:
+def _say(key: str, text: str, ring: dict | None, days: int, since: int = 0) -> dict:
     """
     Один шаг разговора на странице.
 
@@ -287,7 +311,7 @@ def _say(text: str, ring: dict | None, days: int, since: int = 0) -> dict:
     «Отправить», иначе пропадало навсегда - страница ставила lastSeq за него, и
     в /state оно больше не попадало. Повторы страница отбивает сама по номеру.
     """
-    diary = STORE.get(WEB_KEY)
+    diary = STORE.get(key)
     with diary.lock:
         before = diary.seq      # номер до шага: с ним и сверяем чужой since
     dialog.step(diary, text, ring=ring, links=diary.links(), hints=diary.hints(),
@@ -312,7 +336,7 @@ def _shown(since: int, seq: int) -> int:
     return since if since <= seq else 0
 
 
-def _set_city(value) -> dict:
+def _set_city(key: str, value) -> dict:
     """
     Город человека - всё, что нужно для погоды.
 
@@ -325,7 +349,7 @@ def _set_city(value) -> dict:
     """
     city = ("" if value is None else str(value))[:MAX_CITY].strip()
     found = bool(city) and weather.coords(city) is not None
-    diary = STORE.get(WEB_KEY)
+    diary = STORE.get(key)
     with diary.lock:
         diary.city = city
     # Город человек называет один раз, спрашивать снова после перезапуска
@@ -367,7 +391,7 @@ def _move_city_from_file() -> None:
         pass
 
 
-def _weather_today() -> dict:
+def _weather_today(key: str) -> dict:
     """
     Сегодняшняя погода в городе человека и факторы, которые из неё вышли.
 
@@ -381,7 +405,7 @@ def _weather_today() -> dict:
     `weather.readings` ходит в сеть, поэтому замок дневника берём только чтобы
     прочитать город, и отпускаем до запроса.
     """
-    diary = STORE.get(WEB_KEY)
+    diary = STORE.get(key)
     with diary.lock:
         city = diary.city
 
@@ -411,7 +435,7 @@ def _weather_today() -> dict:
     }
 
 
-def _food_step(payload: dict, since: int = 0) -> dict:
+def _food_step(key: str, payload: dict, since: int = 0) -> dict:
     """
     Еда числами: КБЖУ за сегодня руками или выгрузка из приложения.
 
@@ -419,7 +443,7 @@ def _food_step(payload: dict, since: int = 0) -> dict:
     за день, а рассказывает про день сколько угодно раз, и таскать их с каждой
     фразой незачем.
     """
-    diary = STORE.get(WEB_KEY)
+    diary = STORE.get(key)
     try:
         by_day = _food_days(payload)
     except ValueError as exc:
@@ -490,10 +514,10 @@ def _food_days(payload: dict) -> dict:
     return {date.today(): values}
 
 
-def _summary_step(days: int, since: int = 0) -> dict:
+def _summary_step(key: str, days: int, since: int = 0) -> dict:
     """Все выводы разом. Идут в ту же ленту, что и разговор."""
     ready = _summary(days)      # тяжёлую статистику считаем до замка дневника
-    diary = STORE.get(WEB_KEY)
+    diary = STORE.get(key)
     with diary.lock:
         before = diary.seq
         diary.say("me", "Что уже известно?")
@@ -557,7 +581,7 @@ def _summary(days: int) -> list[dict]:
     return messages
 
 
-def _export(kind: str) -> tuple[bytes, str, str]:
+def _export(key: str, kind: str) -> tuple[bytes, str, str]:
     """
     Дневник человека одним файлом: тело, тип и имя файла.
 
@@ -574,7 +598,7 @@ def _export(kind: str) -> tuple[bytes, str, str]:
     никуда не ходит, а читать список дней, пока его правит соседний запрос,
     нельзя.
     """
-    diary = STORE.get(WEB_KEY)
+    diary = STORE.get(key)
     with diary.lock:
         if kind == "csv":
             return (export.as_csv(diary.timeline).encode("utf-8"),
@@ -612,7 +636,7 @@ class Handler(BaseHTTPRequestHandler):
             # хранилища, а хранилище местами берёт замок дневника под своим -
             # обратный порядок рано или поздно свёл бы два потока намертво.
             telegram = RUNNER.state()
-            diary = STORE.get(WEB_KEY)
+            diary = STORE.get(self._user_key())
             # Лента и номер - одним куском: сообщение из чата, легшее между
             # ними, страница больше никогда не покажет - поставит по нему
             # lastSeq. Заодно feed не перебирает список, который в этот
@@ -633,7 +657,7 @@ class Handler(BaseHTTPRequestHandler):
             # обычным fetch и сохраняет файл сама. Чужому сайту она не достанется
             # - его отсеет _ours() по Origin и Sec-Fetch-Site.
             kind = _one_param(self.path, "format")
-            body, kind_header, name = _export(kind)
+            body, kind_header, name = _export(self._user_key(), kind)
             # attachment - на случай, если человек откроет адрес руками: иначе
             # браузер покажет дневник страницей вместо того, чтобы сохранить.
             self._send(body, kind_header,
@@ -656,29 +680,30 @@ class Handler(BaseHTTPRequestHandler):
         if payload is None:
             return                      # ответ уже отправлен
 
+        key = self._user_key()
         if path == "/say":
             try:
                 text, ring, days, since = _checked(payload)
             except ValueError as exc:
                 self._fail(400, str(exc))
                 return
-            self._json(_say(text, ring, days, since))
+            self._json(_say(key, text, ring, days, since))
         elif path == "/summary":
             # Выводы дописываются в ленту, то есть меняют состояние. Такое
             # нельзя отдавать по GET: чужая страница вызовет его картинкой.
-            self._json(_summary_step(_clamp_days(payload.get("days")),
+            self._json(_summary_step(key, _clamp_days(payload.get("days")),
                                      _seq(payload.get("since"))))
         elif path == "/reset":
-            STORE.get(WEB_KEY).reset()
+            STORE.get(key).reset()
             self._json({"ok": True})
         elif path == "/city":
-            self._json(_set_city(payload.get("city")))
+            self._json(_set_city(key, payload.get("city")))
         elif path == "/weather":
             # Запрос ходит в сеть за погодой, а не только читает готовое,
             # поэтому POST: чужая страница не должна дёргать его картинкой.
-            self._json(_weather_today())
+            self._json(_weather_today(key))
         elif path == "/food":
-            self._json(_food_step(payload, _seq(payload.get("since"))))
+            self._json(_food_step(key, payload, _seq(payload.get("since"))))
         elif path == "/telegram/connect":
             self._connect(payload)
         elif path == "/telegram/disconnect":
@@ -693,6 +718,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         else:
             self._json({"ok": True, "code": RUNNER.new_code()})
+
+    def _user_key(self) -> str:
+        """
+        Чей дневник открыт в этом запросе. Ключ берётся только отсюда и никогда
+        из тела запроса: иначе любой подставит чужой номер и прочтёт чужие
+        записи. В режиме local дневник один, страницы.
+        """
+        return WEB_KEY
 
     def _connect(self, payload: dict) -> None:
         """
@@ -890,6 +923,11 @@ def main() -> None:
     # модуль импортируют и тесты, а трогать файлы человека они не должны.
     _move_city_from_file()
     threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
+    if MODE == "server":
+        # Каталог с базой - только владельцу процесса. Сам файл sqlite
+        # заводит хранилище с правами 0600.
+        DB_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(DB_FILE.parent, 0o700)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")
     try:

@@ -398,7 +398,10 @@ def main() -> None:
     # и те же записи. Запускать бота отдельно от страницы имеет смысл, только
     # если страница не работает: два процесса на один файл будут затирать друг
     # другу дни, каждый своей памятью.
-    bot = TelegramBot(store=DiaryStore(DIARY_FILE), parser=dialog.default_parser())
+    # MIRA_DB - тот же путь к базе, что у страницы: иначе бот и страница,
+    # запущенные с одной настройкой, разошлись бы по двум файлам.
+    bot = TelegramBot(store=DiaryStore(os.environ.get("MIRA_DB") or DIARY_FILE),
+                      parser=dialog.default_parser())
     print("Бот запущен. Напишите ему в Telegram. Остановить: Ctrl+C")
     bot.run()
 
