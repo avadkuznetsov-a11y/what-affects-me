@@ -176,6 +176,36 @@ def test_observation_can_point_at_tomorrow():
     assert "Пока это наблюдение, не вывод." in said
 
 
+def test_observation_numbers_are_told_as_the_person_says_them():
+    """
+    Внутри головная боль хранится «больше - лучше»: сильная боль это 2 из 10.
+    Человек же называет силу боли, и во фразе числа должны быть его: после
+    пива болит на 8, без пива на 3, а не «2,0 против 7,0», что читается как
+    «после пива болит меньше».
+    """
+    timeline = _beer_diary()
+    today = _day(алкоголь=1)
+    timeline.add(today)
+
+    said = next(line for line in observations(timeline, today, {"алкоголь"}, _hints(timeline))
+                if "Замечено" in line)
+    assert "голова болит чаще - 8,0 против 3,0" in said
+
+
+def test_anxiety_observation_numbers_are_told_as_strength():
+    """То же для тревоги: после встреч тревога 7 из 10 по словам человека."""
+    days = [_day(offset, много_встреч=1, тревога=3.0) for offset in (9, 6, 3)]
+    days += [_day(offset, много_встреч=0, тревога=8.0) for offset in (8, 5, 2, 7, 4, 1)]
+    timeline = _timeline(*days)
+    hints = _hints(timeline)
+    today = _day(много_встреч=1)
+    timeline.add(today)
+
+    said = next(line for line in observations(timeline, today, {"много встреч"}, hints)
+                if "Замечено" in line)
+    assert "тревожнее - 7,0 против 2,0" in said
+
+
 def test_observation_does_not_repeat_the_habit_line_twice():
     timeline = _beer_diary()
     today = _day(алкоголь=1)

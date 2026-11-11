@@ -591,4 +591,5 @@ def test_example_takes_only_listed_periods(service, monkeypatch):
     assert code == 200 and json.loads(body)["period"] == "3 недели"
     who.get("/insights/example?days=200")
     who.get("/insights/example?days=abc")
-    assert asked == [21, server.DEFAULT_DAYS, server.DEFAULT_DAYS]
+    # Срок по умолчанию посчитан один раз: второй запрос берёт готовый ответ
+    assert asked == [21, server.DEFAULT_DAYS]

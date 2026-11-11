@@ -439,12 +439,18 @@
         <h3>Ваш дневник</h3>
         <div id="own"><p class="hint">Считаю...</p></div>
       </div>
+      <!-- Пока своих находок нет, пример виден целиком. Появилась хоть одна -
+           свои выводы главнее, и пример сворачивается в ссылку (drawOwn). -->
       <div class="sec">
-        <h3>Так это будет выглядеть: пример на придуманном дневнике</h3>
-        <div class="pick"><label for="days">Придуманный дневник за</label>
-          <select id="days" onchange="example()"></select>
-          <span>Связи в нём заложены заранее, это не ваши записи.</span></div>
-        <div id="demo"></div>
+        <button class="link" id="demo-open" hidden onclick="openExample()">Посмотреть пример
+          на придуманном дневнике</button>
+        <div id="demo-body">
+          <h3>Так это будет выглядеть: пример на придуманном дневнике</h3>
+          <div class="pick"><label for="days">Придуманный дневник за</label>
+            <select id="days" onchange="example()"></select>
+            <span>Связи в нём заложены заранее, это не ваши записи.</span></div>
+          <div id="demo"></div>
+        </div>
       </div>
     </section>
 
@@ -1092,7 +1098,8 @@ async function send(){
 // ── Что Мира заметила ─────────────────────────────────────────────────────
 // Свой дневник и пример спрашиваем отдельно: пример за полгода считается
 // секунд семь, и свой дневник не должен ждать чужие цифры.
-let ownAsked = 0, demoAsked = 0;
+// demoOpened - человек сам раскрыл свёрнутый пример: дальше не сворачиваем.
+let ownAsked = 0, demoAsked = 0, demoOpened = false;
 
 function plural(count, one, few, many){
   const tens = count % 100, last = count % 10;
@@ -1150,9 +1157,25 @@ function waiting(title, text, have, need){
   return row;
 }
 
+// Пример на придуманном дневнике: свёрнут ссылкой, когда у человека есть свои
+// находки, иначе виден. Свёрнутый не спрашиваем у сервера вовсе - считать его
+// дорого, а смотрят его тогда редко.
+function showExample(collapse){
+  const fold = collapse && !demoOpened;
+  document.getElementById('demo-open').hidden = !fold;
+  document.getElementById('demo-body').hidden = fold;
+  if(!fold && !document.getElementById('demo').childElementCount) example();
+}
+
+function openExample(){
+  demoOpened = true;
+  showExample(false);
+}
+
 function drawOwn(answer){
   const box = document.getElementById('own');
   box.innerHTML = '';
+  showExample(answer.findings.length > 0);
   const days = answer.days, first = answer.first, sure = answer.sure;
   const written = (days === 1 ? 'Записан ' : 'Записано ') + days + ' '
     + plural(days, 'день', 'дня', 'дней');
@@ -1180,9 +1203,11 @@ async function insights(){
     const answer = await talk('/insights');
     if(asked === ownAsked) drawOwn(answer);
   } catch(e) {
+    if(asked !== ownAsked) return;
     const box = document.getElementById('own');
     box.innerHTML = '';
     box.appendChild(el('p', 'warn', 'Выводы не посчитались: ' + e.message));
+    showExample(false);     // своих не узнали - пример хотя бы покажем, как раньше
   }
 }
 
@@ -1590,11 +1615,9 @@ function tab(name){
     button.setAttribute('aria-selected', chosen ? 'true' : 'false');
   }
   // Выводы спрашиваем при каждом открытии раздела: за время разговора их
-  // могло прибавиться. Пример считается один раз - он не меняется.
-  if(name === 'insights'){
-    insights();
-    if(!document.getElementById('demo').childElementCount) example();
-  }
+  // могло прибавиться. Пример считается один раз - он не меняется, а нужен ли
+  // он вообще, решает drawOwn по ответу /insights.
+  if(name === 'insights') insights();
   // У скрытой ленты высота нулевая, и прокрутка вниз при показе сообщения не
   // сработала: доматываем её здесь, когда лента снова на экране.
   if(name === 'chat'){

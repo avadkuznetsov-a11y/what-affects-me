@@ -127,6 +127,7 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(weather, "coords", lambda city: (55.75, 37.62))
     monkeypatch.setattr(weather, "readings", lambda city: {})
     server._CACHE[server.DEFAULT_DAYS] = (derive_factors(build(days=21)), [])
+    server._EXAMPLES.clear()     # готовые ответы примера посчитаны по прежнему _CACHE
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield Service(httpd.server_address[1], store, accounts)

@@ -1,5 +1,7 @@
 """Один шаг разговора: он же на странице, он же в чате."""
+import re
 from datetime import date, timedelta
+from pathlib import Path
 
 from wam import dialog
 from wam.diary import DiaryStore
@@ -489,3 +491,65 @@ def test_ready_answers_do_not_repeat_word_for_word():
     assert dialog.TRY_WITHOUT_REPLY in [m["text"] for m in first]
     assert dialog.SHORT_AGAIN[dialog.TRY_WITHOUT_REPLY] in [m["text"] for m in second]
     assert dialog.ALREADY_SAID in [m["text"] for m in third]
+
+
+# Названия кнопок и разделов, на которые ссылаются готовые ответы. Каждое
+# должно быть на странице: пока ответы звали «Выгрузить дневник» и «Начать
+# заново внизу страницы», человек искал то, чего в новом виде страницы нет.
+_PAGE = (Path(__file__).resolve().parent.parent / "web" / "page.html").read_text("utf-8")
+
+
+def _labels(text: str) -> list[str]:
+    return re.findall(r"«([^»]+)»", text)
+
+
+def _ready_answers() -> list[str]:
+    local = [dialog.DELETE_REPLY, dialog.PRIVACY_REPLY, dialog.MEDICAL_REPLY]
+    service = [variant for pair in dialog.SERVICE_REPLIES.values() for variant in pair]
+    return local + service + list(dialog.SHORT_AGAIN.values())
+
+
+def test_ready_answers_name_only_what_the_page_has():
+    for text in _ready_answers():
+        assert "Выгрузить" not in text and "внизу страницы" not in text, text
+        for label in _labels(text):
+            if label in ("мне плохо", "начали"):   # слова человека, а не кнопки
+                continue
+            assert label in _PAGE, f"«{label}» нет на странице: {text}"
+
+
+def test_delete_answer_depends_on_mode_and_place(monkeypatch):
+    """
+    В local «Начать заново» стирает только ленту и сегодняшний день - пустой
+    дневник по ней обещать нельзя. На сайте сервиса стирают в «Мои данные»,
+    в чате бота сервиса - командой /delete.
+    """
+    assert "прошлые дни останутся" in dialog.DELETE_REPLY
+    assert "«Начать заново»" in dialog.DELETE_REPLY
+
+    monkeypatch.setattr(dialog, "SERVICE", True)
+    page = [m["text"] for m in _step(DiaryStore().get("web"), "удали всё что записал")]
+    chat = [m["text"] for m in _step(DiaryStore().get("web"), "удали всё что записал",
+                                     origin="chat")]
+    assert any("«Мои данные»" in t and "«Удалить дневник»" in t for t in page)
+    assert any("/delete" in t for t in chat)
+    assert not any("«" in t for t in chat if "/delete" in t)    # в чате кнопок нет
+
+
+def test_service_answers_repeat_shorter(monkeypatch):
+    """Короткий повтор работает и для ответов режима server."""
+    monkeypatch.setattr(dialog, "SERVICE", True)
+    diary = DiaryStore().get("web")
+    first = _step(diary, "удали всё что записал")
+    second = _step(diary, "сотри всё")
+    page, _ = dialog.SERVICE_REPLIES[dialog.DELETE_REPLY]
+    assert page in [m["text"] for m in first]
+    assert dialog.SHORT_AGAIN[page] in [m["text"] for m in second]
+
+
+def test_about_me_points_to_the_insights_section():
+    said = " ".join(m["text"] for m in _step(DiaryStore().get("web"), "что ты про меня знаешь?"))
+    assert "«Что Мира заметила»" in said
+    chat = " ".join(m["text"] for m in _step(DiaryStore().get("web"), "что ты про меня знаешь?",
+                                             origin="chat"))
+    assert "/итоги" in chat

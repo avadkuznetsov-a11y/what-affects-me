@@ -219,8 +219,13 @@ def _pattern_line(past: list[DayRecord], link: Link, today: date) -> str:
     when = {0: "", 1: " на следующий день", 2: " через день"}[link.lag_days]
     change = metric_phrase(link.metric, worse=link.effect < 0)
 
-    said = (f"Замечено: {start}{when} {change} - {_number(link.value_with)} против "
-            f"{_number(link.value_without)}. Пока это наблюдение, не вывод.")
+    # Средние посчитаны во внутренней шкале «больше - лучше». Человек же
+    # называет силу тревоги и боли: без переворота «тревога выше - 7,0 против
+    # 3,0» выходила бы с числами наоборот (как и в строке про показатель дня).
+    said = (f"Замечено: {start}{when} {change} - "
+            f"{_number(as_told(link.metric, link.value_with))} против "
+            f"{_number(as_told(link.metric, link.value_without))}. "
+            f"Пока это наблюдение, не вывод.")
 
     # Сколько раз это уже было - тем и живёт наблюдение: «пиво третий раз за
     # неделю» человек проверяет по своей же памяти и сразу понимает, о чём речь.

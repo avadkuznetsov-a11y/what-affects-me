@@ -31,6 +31,7 @@ def site():
     # Придуманный дневник за четыре месяца и статистику по нему подкладываем
     # готовыми: считать их тут незачем, проверяем не выводы, а обработку запросов.
     server._CACHE[server.DEFAULT_DAYS] = (derive_factors(build(days=21)), [])
+    server._EXAMPLES.clear()     # готовые ответы примера посчитаны по прежнему _CACHE
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{httpd.server_address[1]}"
@@ -695,3 +696,86 @@ def test_own_insights_turn_hints_into_guesses(site, monkeypatch):
     [guess] = answer["findings"]
     assert guess["weak"] and guess["tag"] == "пока догадка"
     assert "дней пока мало" in guess["text"]
+
+
+def test_examples_are_warmed_for_every_period(monkeypatch, tmp_path):
+    """
+    Прогрев считает пример на все сроки из списка, начиная со срока по
+    умолчанию, и дальше ответ отдаётся готовым - без нового счёта.
+    """
+    asked = []
+    monkeypatch.setattr(server, "_EXAMPLES", {})
+    monkeypatch.setattr(server, "EXAMPLE_FILE", tmp_path / "example.json")
+    monkeypatch.setattr(server, "_diary", lambda days: asked.append(days) or (None, []))
+    server._warm_examples()
+
+    periods = [days for days, _ in server.PERIODS]
+    assert asked[0] == server.DEFAULT_DAYS and sorted(asked) == sorted(periods)
+    for days in periods:
+        assert server._example(days)["days"] == days
+    assert len(asked) == len(periods)
+
+
+def test_failed_warm_does_not_stop_the_rest(monkeypatch, capsys, tmp_path):
+    """Упал один срок - остальные всё равно греются, а упавший посчитается по запросу."""
+    def diary(days):
+        if days == 45:
+            raise RuntimeError("сломалось")
+        return None, []
+    monkeypatch.setattr(server, "_EXAMPLES", {})
+    monkeypatch.setattr(server, "EXAMPLE_FILE", tmp_path / "example.json")
+    monkeypatch.setattr(server, "_diary", diary)
+    server._warm_examples()
+    assert 45 not in server._EXAMPLES
+    assert len(server._EXAMPLES) == len(server.PERIODS) - 1
+    assert "Пример за 45 дней" in capsys.readouterr().out
+
+
+def test_example_folds_into_a_link_when_own_findings_exist():
+    """
+    Свои находки есть - пример на придуманном дневнике сворачивается в ссылку
+    и не спрашивается у сервера, пока его не раскроют. Решает drawOwn по
+    ответу /insights, а не tab() сразу при открытии раздела.
+    """
+    page = (Path(server.__file__).parent / "page.html").read_text("utf-8")
+    assert 'id="demo-open"' in page and "Посмотреть пример" in page
+    tab = page[page.index("function tab(name)"):]
+    tab = tab[:tab.index("\n}\n")]
+    assert "example()" not in tab
+    draw = page[page.index("function drawOwn(answer)"):]
+    assert "showExample(answer.findings.length > 0)" in draw[:draw.index("\n}\n")]
+
+
+def test_warmed_example_survives_restart_of_the_same_code(monkeypatch, tmp_path):
+    """
+    Посчитанный пример лежит на диске, и следующий запуск той же версии кода
+    не считает его заново. Другая версия кода файл не берёт.
+    """
+    asked = []
+    monkeypatch.setattr(server, "EXAMPLE_FILE", tmp_path / "example.json")
+    monkeypatch.setattr(server, "_diary", lambda days: asked.append(days) or (None, []))
+    monkeypatch.setattr(server, "_EXAMPLES", {})
+    server._warm_examples()
+    assert len(asked) == len(server.PERIODS)
+
+    asked.clear()
+    monkeypatch.setattr(server, "_EXAMPLES", {})      # как будто процесс новый
+    server._warm_examples()
+    assert asked == []
+    assert sorted(server._EXAMPLES) == sorted(days for days, _ in server.PERIODS)
+
+    monkeypatch.setattr(server, "_EXAMPLES", {})
+    monkeypatch.setattr(server, "_code_mark", lambda: "другая версия")
+    server._warm_examples()
+    assert len(asked) == len(server.PERIODS)
+
+
+def test_broken_example_file_is_ignored(monkeypatch, tmp_path):
+    """Битый или чужой файл - просто считаем заново, запуск не падает."""
+    monkeypatch.setattr(server, "EXAMPLE_FILE", tmp_path / "example.json")
+    monkeypatch.setattr(server, "_EXAMPLES", {})
+    for junk in ("{не json", "[]", json.dumps({"code": server._code_mark(),
+                                               "examples": {"999": {}, "abc": {}, "21": "x"}})):
+        server.EXAMPLE_FILE.write_text(junk, "utf-8")
+        server._load_examples(server._code_mark())
+        assert server._EXAMPLES == {}

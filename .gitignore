@@ -23,6 +23,9 @@ docs/design/mira-interface.html
 .diary.db
 .diary.db-journal
 .diary.db.broken
+# Посчитанный пример на придуманном дневнике (web/server.py, EXAMPLE_FILE)
+.example-cache.json
+.example-cache.json.tmp
 # Город хранился отдельным файлом, пока не переехал в дневник. У тех, кто
 # запускал прототип раньше, файл ещё лежит на диске - пусть лежит незаметно.
 web/.city

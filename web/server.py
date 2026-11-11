@@ -67,6 +67,10 @@ PUBLIC_HOST = os.environ.get("MIRA_PUBLIC_HOST", "").strip().lower()
 # берём из модуля, а не копией: тесты подменяют его на временный.
 DB_FILE = Path(os.environ["MIRA_DB"]) if os.environ.get("MIRA_DB") else storage.DIARY_FILE
 
+# Готовые ответы разговора ссылаются на кнопки страницы, а они у режимов разные:
+# в server нет ни файла дневника у человека, ни раздела «Telegram».
+dialog.SERVICE = MODE == "server"
+
 # В контейнере слушаем все адреса: снаружи до порта дотягивается только
 # nginx-proxy из общей сети docker, сам порт наружу не опубликован.
 HOST = "0.0.0.0" if MODE == "server" else "127.0.0.1"
@@ -724,17 +728,107 @@ def _insights(key: str) -> dict:
                         + [_finding(l, weak=True) for l in guesses[:MAX_GUESSES]]}
 
 
+# Готовые ответы /insights/example по срокам. Придуманный дневник один и тот же
+# (build с постоянным зерном), так что ответ на срок не меняется до перезапуска.
+_EXAMPLES: dict[int, dict] = {}
+
+# Те же ответы на диске, рядом с базой: все сроки считаются минуту-полторы, и
+# без файла каждая выкладка начиналась бы с этой минуты «Считаю». Личного в
+# файле нет - только выводы придуманного дневника.
+EXAMPLE_FILE = DB_FILE.parent / ".example-cache.json"
+
+
+def _code_mark() -> str:
+    """
+    Отпечаток кода, от которого зависит пример: модули разбора и статистики,
+    генератор придуманного дневника и этот файл. Поменялся код - файл с диска
+    не годится: в нём выводы прошлой версии.
+    """
+    root = Path(__file__).resolve().parent.parent
+    digest = hashlib.sha256()
+    for path in sorted([*root.glob("wam/*.py"), *root.glob("demo/*.py"),
+                        Path(__file__).resolve()]):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _load_examples(mark: str) -> None:
+    """Готовые ответы с диска, если они от этой же версии кода."""
+    try:
+        saved = json.loads(EXAMPLE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return              # файла нет или он битый - посчитаем заново
+    if not isinstance(saved, dict) or saved.get("code") != mark:
+        return
+    listed = dict(PERIODS)
+    for days, answer in (saved.get("examples") or {}).items():
+        if days.isdigit() and int(days) in listed and isinstance(answer, dict):
+            _EXAMPLES.setdefault(int(days), answer)
+
+
+def _save_examples(mark: str) -> None:
+    """
+    Записать посчитанное. Через временный файл: оборванная запись не оставит
+    полфайла. Словарь копируем одним вызовом - его может пополнять запрос из
+    соседнего потока, а json.dumps по живому словарю падает на его росте.
+    """
+    temp = EXAMPLE_FILE.with_name(EXAMPLE_FILE.name + ".tmp")
+    try:
+        temp.write_text(json.dumps({"code": mark, "examples": dict(_EXAMPLES)},
+                                   ensure_ascii=False), encoding="utf-8")
+        os.replace(temp, EXAMPLE_FILE)
+    except OSError as exc:
+        # Не записали - не беда: следующий запуск посчитает пример заново
+        print(f"Пример на диск не записался: {exc}")
+
+
 def _example(days: int) -> dict:
     """
     Выводы придуманного дневника - образец того, как будут выглядеть свои.
     Тот же отбор, что в _summary: отсеянное другими факторами - одной строкой.
     """
+    ready = _EXAMPLES.get(days)
+    if ready is not None:
+        return ready
     _, links = _diary(days)
     real = [l for l in links if l.strength != "наблюдение" and not l.confounder]
     dropped = [l for l in links if l.strength != "наблюдение" and l.confounder]
-    return {"days": days, "period": period_name(days),
-            "findings": [_finding(l, own=False) for l in real],
-            "dropped": list(dict.fromkeys(l.factor for l in dropped))}
+    answer = {"days": days, "period": period_name(days),
+              "findings": [_finding(l, own=False) for l in real],
+              "dropped": list(dict.fromkeys(l.factor for l in dropped))}
+    _EXAMPLES[days] = answer
+    return answer
+
+
+def _warm_examples() -> None:
+    """
+    Посчитать пример на все сроки из списка заранее, в фоне после запуска.
+
+    В свежем процессе срок считался при первом запросе, секунд по десять, и
+    раздел «Что Мира заметила» всё это время показывал «Считаю». Сроки идут по
+    одному, начиная с того, что выбран на странице по умолчанию: параллельно
+    они только мешали бы друг другу и запросам людей. Запрос, пришедший до
+    конца прогрева, ждёт свой срок как раньше - замок срока в _diary общий.
+
+    Посчитанное ложится в EXAMPLE_FILE, и следующий запуск той же версии
+    кода берёт его оттуда сразу.
+    """
+    mark = _code_mark()
+    _load_examples(mark)
+    for days in [DEFAULT_DAYS] + [d for d, _ in PERIODS if d != DEFAULT_DAYS]:
+        if STOP.is_set():
+            return
+        if days in _EXAMPLES:
+            continue
+        try:
+            _example(days)
+        except Exception as exc:
+            # Прогрев - удобство, а не условие работы: упал - срок посчитается
+            # по первому запросу, как раньше.
+            print(f"Пример за {days} дней заранее не посчитался: {trace(exc)}")
+            continue
+        _save_examples(mark)
 
 
 def _export(key: str, kind: str) -> tuple[bytes, str, str]:
@@ -1319,7 +1413,7 @@ class Handler(BaseHTTPRequestHandler):
             reason = {"has": "Telegram уже подключён.",
                       "taken": "Этот Telegram уже ведёт другой дневник Миры."}.get(
                 problem, "Ссылка не сработала: откройте её в том же браузере, где нажали "
-                         "«Подключить Telegram», не позже чем через десять минут.")
+                         "«Подключить» в разделе «Мои данные», не позже чем через десять минут.")
             self._fail(409 if problem in ("has", "taken") else 400, reason)
             return
         STORE.attach(chat_id, user_key(self.uid))
@@ -1861,7 +1955,9 @@ def stop_service(server: ThreadingHTTPServer | None = None) -> None:
 
 
 def main() -> None:
-    threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
+    # Прогрев примера на все сроки: первый ответ не ждёт счёта, а запуск и
+    # /healthz не ждут прогрева
+    threading.Thread(target=_warm_examples, daemon=True).start()
     if MODE == "server":
         _check_server_settings()
     server = Server((HOST, PORT), Handler)
