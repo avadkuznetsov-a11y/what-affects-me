@@ -6,17 +6,22 @@
 Сервер и браузер - те же, что в test_service.py, бот с подменённым API - тот
 же, что в test_service_bot.py.
 """
+import hashlib
 import json
 import re
 import sqlite3
+import threading
 import time
+from datetime import datetime
 
 import pytest
 
 import web.server as server
 from bot.telegram import ERASE_WORD, TelegramBot
+import wam.accounts as accounts_module
 from wam import dialog
-from wam.accounts import CODE_ALPHABET, normal_code, user_key
+from wam.accounts import CODE_ALPHABET, Accounts, normal_code, user_key
+from wam.diary import DiaryStore
 
 from test_service import ORIGIN, Person, service  # noqa: F401 - фикстура
 from test_service_bot import FAKE_TOKEN, PUBLIC, FakeTelegram, _update
@@ -199,13 +204,16 @@ def test_new_account_needs_our_page(service):
     assert service.accounts.count() == 0
 
 
-def test_site_accounts_without_consent_are_swept_after_a_week(service):
+def test_site_accounts_without_consent_are_swept_after_a_day(service):
     newcomer(service, consent=False)
     kept, _ = newcomer(service, ip="10.0.0.2")
+    service.accounts.enroll(101, "user101")           # из бота, тоже без согласия
     assert server.sweep_idle() == 0
-    assert server.sweep_idle(now=time.time() + 8 * 24 * 60 * 60) == 1
-    assert service.accounts.count() == 1
+    assert server.sweep_idle(now=time.time() + 25 * 60 * 60) == 1
+    assert service.accounts.count() == 2               # из бота ждёт неделю
     assert service.accounts.user(kept.user_id) is not None
+    assert server.sweep_idle(now=time.time() + 8 * 24 * 60 * 60) == 1
+    assert service.accounts.user(101) is None
 
 
 def test_telegram_user_can_get_a_code_too(service):
@@ -254,8 +262,9 @@ def bot(service, monkeypatch):
 
 
 def _link_token(who) -> str:
-    status, _, body = who.post("/account/telegram", {})
+    status, headers, body = who.post("/account/telegram", {})
     assert status == 200, body
+    assert headers["Cache-Control"] == "no-store"
     link = json.loads(body)["link"]
     assert link.startswith("https://t.me/mira_test_bot?start=")
     token = link.split("start=", 1)[1]
@@ -263,52 +272,107 @@ def _link_token(who) -> str:
     return token
 
 
-def test_telegram_attaches_to_the_existing_site_user(service, bot):
+def _second_token(bot, chat_id) -> str:
+    """Ответная ссылка, которую бот прислал в чат на /start <токен>."""
+    text = bot._call.sent(chat_id)[-1]["text"]
+    link = next(word for word in text.split() if word.startswith(PUBLIC + "/link#t="))
+    return link.split("#t=", 1)[1]
+
+
+def _confirm(who, token):
+    return who.post("/account/telegram/confirm", {"token": token})
+
+
+def test_telegram_is_linked_only_after_confirmation_in_the_same_browser(service, bot):
     who, _ = newcomer(service)
-    token = _link_token(who)
-    bot.process(_update(f"/start {token}", user_id=555))
-    assert "подключён" in bot._call.sent(555)[-1]["text"]
-    # новый человек не заведён, чат привязан к тому, кто нажал кнопку
+    bot.process(_update(f"/start {_link_token(who)}", user_id=555))
+    second = _second_token(bot, 555)
+    # бот только предложил чат - ничего не привязано
+    assert service.accounts.by_telegram(555) is None
+    assert service.accounts.user(who.user_id)["tg_id"] is None
+
+    status, _, body = _confirm(who, second)
+    assert status == 200, body
     assert service.accounts.count() == 1
     assert service.accounts.by_telegram(555) == who.user_id
     assert service.store.linked_chats(user_key(who.user_id)) == [555]
+    assert "подключён" in bot._call.sent(555)[-1]["text"]
     account = who.state()["account"]
     assert account["telegram"] is True and account["username"] == "user555"
-    # запись из бота видна на странице того же человека
-    bot.process(_update("Пил кофе вечером", user_id=555, update_id=2))
-    assert "кофе" in _texts(who.state()).lower()
-    # /start без токена - тот же человек, а не новый
+    # /start без токена - тот же человек, а не новый; вторую ссылку не дают
     bot.process(_update("/start", user_id=555, update_id=3))
     assert service.accounts.count() == 1
-    # уже подключён - вторую ссылку не дают
     assert who.post("/account/telegram", {})[0] == 409
 
 
-def test_link_token_works_once(service, bot):
+def test_linked_chat_writes_only_after_consent_in_the_chat(service, bot):
+    who, _ = newcomer(service)                     # согласие дано на сайте
+    bot.process(_update(f"/start {_link_token(who)}", user_id=555))
+    assert _confirm(who, _second_token(bot, 555))[0] == 200
+    bot.process(_update("Пил кофе вечером", user_id=555, update_id=2))
+    assert "согласие" in bot._call.sent(555)[-1]["text"].lower()
+    assert "кофе" not in _texts(who.state()).lower()
+    # согласие нажато в самом чате - теперь записывает
+    bot.process({"update_id": 3, "callback_query": {
+        "id": "q", "data": "consent", "from": {"id": 555}}})
+    bot.process(_update("Пил кофе вечером", user_id=555, update_id=4))
+    assert "кофе" in _texts(who.state()).lower()
+
+
+def test_foreign_link_does_not_hand_the_victim_chat_to_the_attacker(service, bot):
+    attacker, attacker_code = newcomer(service, ip="10.0.0.1")
+    token = _link_token(attacker)
+    # жертва нажала подсунутую ссылку: бот прислал ей вторую ссылку
+    bot.process(_update(f"/start {token}", user_id=555))
+    second = _second_token(bot, 555)
+    # жертва открыла её в своём браузере - сессия не та
+    victim, _ = newcomer(service, ip="10.0.0.3")
+    assert _confirm(victim, second)[0] == 400
+    assert service.accounts.by_telegram(555) is None
+    # даже вторая сессия самого атакующего не подтвердит (и токен уже погашен)
+    bot.process(_update(f"/start {_link_token(attacker)}", user_id=555, update_id=2))
+    second = _second_token(bot, 555)
+    _, other_device, _ = by_code(service, attacker_code)
+    assert _confirm(other_device, second)[0] == 400
+    assert _confirm(attacker, second)[0] == 400        # одноразовый
+    assert service.accounts.by_telegram(555) is None
+    # записи жертвы в дневник атакующего не идут
+    bot.process(_update("Пил кофе вечером", user_id=555, update_id=3))
+    assert "кофе" not in _texts(attacker.state()).lower()
+
+
+def test_link_tokens_work_once(service, bot):
     who, _ = newcomer(service)
     token = _link_token(who)
     bot.process(_update(f"/start {token}", user_id=555))
     bot.process(_update(f"/start {token}", user_id=556, update_id=2))
     assert "не сработала" in bot._call.sent(556)[-1]["text"]
+    second = _second_token(bot, 555)
+    assert _confirm(who, second)[0] == 200
+    assert _confirm(who, second)[0] in (400, 409)
     assert service.accounts.by_telegram(556) is None
-    assert service.accounts.by_telegram(555) == who.user_id
 
 
-def test_link_token_expires(service, bot, monkeypatch):
+def test_link_tokens_expire(service, bot, monkeypatch):
     who, _ = newcomer(service)
     token = _link_token(who)
     real = time.time
     monkeypatch.setattr(time, "time", lambda: real() + 11 * 60)
     bot.process(_update(f"/start {token}", user_id=555))
     monkeypatch.setattr(time, "time", real)
-    assert service.accounts.by_telegram(555) is None
+    assert "не сработала" in bot._call.sent(555)[-1]["text"]
+    bot.process(_update(f"/start {_link_token(who)}", user_id=555, update_id=2))
+    second = _second_token(bot, 555)
+    monkeypatch.setattr(time, "time", lambda: real() + 11 * 60)
+    status = _confirm(who, second)[0]
+    monkeypatch.setattr(time, "time", real)
+    assert status == 400 and service.accounts.by_telegram(555) is None
 
 
 def test_link_does_not_merge_with_another_telegram_diary(service, bot):
     bot.process(_update("/start", user_id=777))          # у 777 уже свой дневник
     who, _ = newcomer(service)
-    token = _link_token(who)
-    bot.process(_update(f"/start {token}", user_id=777, update_id=2))
+    bot.process(_update(f"/start {_link_token(who)}", user_id=777, update_id=2))
     assert "другой дневник" in bot._call.sent(777)[-1]["text"]
     assert service.accounts.by_telegram(777) == 777
     assert service.accounts.user(who.user_id)["tg_id"] is None
@@ -317,14 +381,131 @@ def test_link_does_not_merge_with_another_telegram_diary(service, bot):
 def test_linked_user_is_erased_whole_from_the_bot(service, bot):
     who, code = newcomer(service)
     bot.process(_update(f"/start {_link_token(who)}", user_id=555))
-    bot.process(_update("/reminder 21:00", user_id=555, update_id=2))
-    bot.process(_update("/delete", user_id=555, update_id=3))
-    bot.process(_update(ERASE_WORD, user_id=555, update_id=4))
+    assert _confirm(who, _second_token(bot, 555))[0] == 200
+    bot.process({"update_id": 2, "callback_query": {
+        "id": "q", "data": "consent", "from": {"id": 555}}})
+    bot.process(_update("/reminder 21:00", user_id=555, update_id=3))
+    bot.process(_update("/delete", user_id=555, update_id=4))
+    bot.process(_update(ERASE_WORD, user_id=555, update_id=5))
     assert service.accounts.user(who.user_id) is None
     assert 555 not in bot.reminders.chats()
     with sqlite3.connect(service.store.storage.path) as db:
         assert db.execute("SELECT COUNT(*) FROM reminders").fetchone()[0] == 0
     assert by_code(service, code)[0] == 401
+
+
+def test_deleted_chat_has_no_diary_and_no_reminders(service, bot):
+    service.accounts.enroll(555, "user555")
+    service.accounts.agree_in_chat(555)
+    bot.reminders.remember(555)
+    service.accounts.erase(555, service.store)        # удалили в обход бота
+    assert bot._diary_of(555) is None
+    assert "/start" in bot.summary(555)
+    bot.remind(datetime.now().replace(hour=21, minute=30))
+    assert 555 not in bot.reminders.chats()
+    assert service.accounts.orphans() == []            # ничейного дневника не завели
+
+
+# ── находки аудита ────────────────────────────────────────────────────────
+
+def test_code_change_is_limited_per_person(service):
+    who, _ = newcomer(service)
+    for _ in range(5):
+        assert who.post("/account/code", {})[0] == 200
+    assert who.post("/account/code", {})[0] == 429
+
+
+def test_code_change_closes_other_sessions_but_not_this_one(service):
+    who, code = newcomer(service)
+    _, other, _ = by_code(service, code)
+    assert other.get("/state")[0] == 200
+    status, headers, _ = who.post("/account/code", {})
+    assert status == 200 and headers["Cache-Control"] == "no-store"
+    assert other.get("/state")[0] == 401
+    assert who.get("/state")[0] == 200
+
+
+def test_new_account_answer_is_not_cached(service):
+    status, headers, _ = _json_post(service, "/auth/new", {})
+    assert status == 200 and headers["Cache-Control"] == "no-store"
+
+
+def test_scrypt_busy_is_503_and_leaves_no_account(service, monkeypatch):
+    slots = threading.BoundedSemaphore(1)
+    slots.acquire()                                   # всё занято
+    monkeypatch.setattr(accounts_module, "SCRYPT_SLOTS", slots)
+    monkeypatch.setattr(accounts_module, "SCRYPT_WAIT", 0.05)
+    status, headers, _ = _json_post(service, "/auth/new", {})
+    assert status == 503 and headers.get("Retry-After") == "2"
+    assert service.accounts.count() == 0
+    assert by_code(service, "AAAA-BBBB-CCCC-DDDD")[0] == 503
+
+
+def test_code_check_costs_one_scrypt_whether_or_not_it_matches(service, monkeypatch):
+    who, code = newcomer(service)
+    calls = []
+    real = hashlib.scrypt
+    monkeypatch.setattr(hashlib, "scrypt", lambda *a, **k: calls.append(1) or real(*a, **k))
+    assert service.accounts.redeem_code("AAAA-BBBB-CCCC-DDDD") is None
+    assert len(calls) == 1
+    assert service.accounts.redeem_code(code) == who.user_id
+    assert len(calls) == 2
+    service.accounts.issue_code(who.user_id)           # без лишней проверки повтора
+    assert len(calls) == 3
+
+
+def test_ipv6_is_limited_per_64_network(service):
+    for n in range(10):
+        assert by_code(service, "AAAA-BBBB-CCCC-DDDD", ip=f"2001:db8:1:2::{n + 1:x}")[0] == 401
+    assert by_code(service, "AAAA-BBBB-CCCC-DDDD", ip="2001:db8:1:2:ffff::1")[0] == 429
+    assert by_code(service, "AAAA-BBBB-CCCC-DDDD", ip="2001:db8:1:3::1")[0] == 401
+    assert server._per_network("2001:db8:1:2::5") == "2001:db8:1:2::/64"
+    assert server._per_network("::ffff:10.1.2.3") == "10.1.2.3"
+    assert server._per_network("10.1.2.3") == "10.1.2.3"
+
+
+def test_account_creation_has_a_common_ceiling(service, monkeypatch):
+    monkeypatch.setattr(server, "CREATE_TOTAL", server.limits.Limiter(2, 3600))
+    assert _json_post(service, "/auth/new", {}, ip="10.3.0.1")[0] == 200
+    assert _json_post(service, "/auth/new", {}, ip="10.3.0.2")[0] == 200
+    assert _json_post(service, "/auth/new", {}, ip="10.3.0.3")[0] == 429
+
+
+def test_account_creation_stops_when_too_many_wait_for_consent(service, monkeypatch):
+    monkeypatch.setattr(server, "MAX_WAITING_CONSENT", 1)
+    newcomer(service, ip="10.4.0.1", consent=False)
+    newcomer(service, ip="10.4.0.2", consent=False)
+    assert _json_post(service, "/auth/new", {}, ip="10.4.0.3")[0] == 429
+    assert service.accounts.count() == 2
+
+
+def test_privacy_tells_about_addresses_and_voice(service, monkeypatch):
+    monkeypatch.setattr(server, "PROXY_LOG_DAYS", 30)
+    _, _, page = service.request("GET", "/privacy")
+    assert "оперативной памяти" in page and "30 дней" in page
+    assert "ничего, кроме" not in page
+    assert "голос выключен" in page
+    assert "{PROXY_LOG_DAYS}" not in page
+
+
+def test_tg_id_migration_skips_taken_numbers_quietly(tmp_path, capsys):
+    path = tmp_path / "old.db"
+    with sqlite3.connect(path) as db:
+        db.execute("CREATE TABLE users (user_id INTEGER PRIMARY KEY, "
+                   "username TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, "
+                   "consent_at REAL, consent_version TEXT, active_at REAL, tg_id INTEGER)")
+        db.execute("INSERT INTO users(user_id, created_at) VALUES(424242, 0)")
+        db.execute("INSERT INTO users(user_id, created_at) VALUES(5, 0)")
+        # человек с сайта уже подключил Telegram 424242
+        db.execute("INSERT INTO users(user_id, created_at, tg_id) VALUES(-7, 0, 424242)")
+    store = DiaryStore(path)
+    accounts = Accounts(store.storage)
+    assert accounts.by_telegram(424242) == -7
+    assert accounts.user(424242)["tg_id"] is None
+    assert accounts.user(5)["tg_id"] == 5
+    out = capsys.readouterr().out
+    assert "1" in out and "424242" not in out
+    store.close()
 
 
 def test_normal_code_takes_only_full_codes():

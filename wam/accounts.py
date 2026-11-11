@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+import threading
 import time
 
 from .storage import Storage
@@ -88,6 +89,24 @@ RETENTION_DAYS = 365
 # незачем, а пустые записи с сайта иначе копились бы без конца.
 CONSENT_WAIT_DAYS = 7
 
+# Заведённые на сайте без согласия живут сутки, а не неделю: их можно
+# наштамповать кнопкой, и неделя копила бы тысячи пустых записей.
+SITE_CONSENT_WAIT_DAYS = 1
+
+# Сколько scrypt считать одновременно. Каждый - 16 МиБ и десятки миллисекунд;
+# без потолка шквал входов по коду съел бы память контейнера (384 МиБ) и все
+# потоки. Кто не дождался места за SCRYPT_WAIT секунд, получает Busy (503).
+SCRYPT_SLOTS = threading.BoundedSemaphore(2)
+SCRYPT_WAIT = 2
+
+# Соль для проверки, когда по отпечатку никого не нашлось: scrypt считаем и
+# тогда, чтобы по времени ответа нельзя было понять, совпал ли отпечаток.
+_DUMMY_SALT = "00" * 16
+
+
+class Busy(Exception):
+    """Все места для scrypt заняты: попросить человека повторить чуть позже."""
+
 
 def user_key(user_id: int) -> str:
     """Ключ дневника человека. Один номер - всегда один и тот же дневник."""
@@ -117,7 +136,12 @@ def _code_index(code: str) -> str:
 
 
 def _code_hash(code: str, salt: str) -> str:
-    return hashlib.scrypt(code.encode("utf-8"), salt=bytes.fromhex(salt), **SCRYPT).hex()
+    if not SCRYPT_SLOTS.acquire(timeout=SCRYPT_WAIT):
+        raise Busy()
+    try:
+        return hashlib.scrypt(code.encode("utf-8"), salt=bytes.fromhex(salt), **SCRYPT).hex()
+    finally:
+        SCRYPT_SLOTS.release()
 
 
 def csrf_for(sid: str) -> str:
@@ -220,6 +244,29 @@ class Accounts:
         user = self.user(user_id)
         return bool(user and user["consent_at"] and user["consent_version"] == CONSENT_VERSION)
 
+    def agree_in_chat(self, user_id: int, version: str = CONSENT_VERSION) -> None:
+        """Согласие нажато в самом чате Telegram: оно же и общее согласие."""
+        with self.storage.atomic() as db:
+            db.execute("UPDATE users SET consent_at=?, consent_version=?, "
+                       "tg_consent_version=? WHERE user_id=?",
+                       (time.time(), version, version, int(user_id)))
+
+    def has_chat_consent(self, user_id: int) -> bool:
+        """
+        Можно ли записывать то, что пишут в чат Telegram этого человека.
+
+        Кто пришёл из Telegram (user_id == tg_id), тот и есть хозяин чата:
+        его согласия, данного где угодно, достаточно. Кто начал на сайте и
+        подключил Telegram потом, должен подтвердить согласие в самом чате -
+        иначе в дневник писал бы чат, за которого согласился кто-то другой.
+        """
+        if not self.has_consent(user_id):
+            return False
+        with self.storage.atomic() as db:
+            row = db.execute("SELECT tg_id, tg_consent_version FROM users WHERE user_id=?",
+                             (int(user_id),)).fetchone()
+        return bool(row) and (row[0] == int(user_id) or row[1] == CONSENT_VERSION)
+
     # ── вход по ссылке ────────────────────────────────────────────────────
     def issue_login(self, user_id: int) -> str:
         """
@@ -262,42 +309,51 @@ class Accounts:
         """
         Новый личный код. Прежний гаснет сразу: хранится только последний.
         Показать код ещё раз нельзя - у нас его нет, только хэш; потерял -
-        выдаём новый, пока человек ещё в дневнике.
+        выдаём новый, пока человек ещё в дневнике. Повтор кода у двух людей
+        при 79 битах не проверяем: вероятность ничтожна, а проверка стоила
+        бы ещё одного scrypt. Busy - все места для scrypt заняты.
         """
-        while True:
-            letters = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
-            code = normal_code(letters)
-            # Повтор кода у двух людей при 79 битах не случится, но если бы
-            # случился, вход по нему открыл бы чужой дневник. Проверка дешёвая.
-            if self._find_code(code) is None:
-                break
+        letters = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LENGTH))
+        code = normal_code(letters)
         salt = secrets.token_hex(16)
+        digest = _code_hash(code, salt)
         with self.storage.atomic() as db:
             db.execute("UPDATE users SET code_index=?, code_salt=?, code_hash=? "
-                       "WHERE user_id=?",
-                       (_code_index(code), salt, _code_hash(code, salt), int(user_id)))
+                       "WHERE user_id=?", (_code_index(code), salt, digest, int(user_id)))
         return code
 
     def redeem_code(self, code) -> int | None:
-        """Чей это код. Неверный, кривой и несуществующий - одинаково None."""
+        """
+        Чей это код. Неверный, кривой и несуществующий - одинаково None.
+        Busy - все места для scrypt заняты.
+        """
         code = normal_code(code)
         if not code:
             return None
-        return self._find_code(code)
-
-    def _find_code(self, code: str) -> int | None:
         with self.storage.atomic() as db:
             rows = db.execute("SELECT user_id, code_salt, code_hash FROM users "
                               "WHERE code_index=?", (_code_index(code),)).fetchall()
         # scrypt считаем вне замка хранилища: десятки миллисекунд на каждого
-        # кандидата, а под замком стоят все запросы сервиса.
+        # кандидата, а под замком стоят все запросы сервиса. Никого не нашлось
+        # - всё равно один scrypt, чтобы время ответа было одинаковым.
+        if not rows:
+            _code_hash(code, _DUMMY_SALT)
+            return None
+        found = None
         for user_id, salt, stored in rows:
             if salt and stored and hmac.compare_digest(_code_hash(code, salt), stored):
-                return int(user_id)
-        return None
+                found = int(user_id)
+        return found
 
     # ── подключение Telegram со страницы ──────────────────────────────────
-    def issue_link(self, user_id: int) -> str:
+    # Два шага, а не один. Будь ссылка t.me/<бот>?start=<токен> сама по себе
+    # привязкой, кто угодно выпустил бы её на своём дневнике и подсунул
+    # другому человеку: тот нажал бы «Запустить», и всё, что он пишет боту,
+    # уходило бы в чужой дневник. Поэтому бот лишь предлагает чат и шлёт в
+    # него вторую ссылку - на страницу. Подтвердить её может только та же
+    # сессия браузера, что выпустила первую: у подсунувшего ссылку второй
+    # ссылки нет (она пришла в чужой чат), а у получившего - нет его сессии.
+    def issue_link(self, user_id: int, sid: str) -> str:
         """
         Токен для ссылки t.me/<бот>?start=<токен>. Действует десять минут,
         один раз, и только последний выданный. 32 байта в base64url - 43
@@ -309,48 +365,85 @@ class Accounts:
         with self.storage.atomic() as db:
             db.execute("DELETE FROM link_tokens WHERE expires_at<=? OR user_id=?",
                        (now, int(user_id)))
-            db.execute("INSERT INTO link_tokens(token_hash, user_id, expires_at) "
-                       "VALUES(?,?,?)", (_digest(token), int(user_id), now + LINK_LIFETIME))
+            db.execute("INSERT INTO link_tokens(token_hash, user_id, expires_at, sid_hash) "
+                       "VALUES(?,?,?,?)",
+                       (_digest(token), int(user_id), now + LINK_LIFETIME, _digest(sid)))
         return token
 
-    def link_telegram(self, token, tg_id: int, username: str = "") -> tuple[int | None, str]:
+    def offer_link(self, token, tg_id: int, username: str = "") -> tuple[str | None, str]:
         """
-        Привязать чат Telegram к человеку, который выдал ссылку на странице.
-        Возвращает (user_id, "") или (None, причина): "bad" - ссылка не та,
-        устарела или уже использована; "taken" - этот Telegram уже ведёт
-        другой дневник; "has" - у человека уже подключён другой Telegram.
-
-        Всё одной транзакцией, токен гаснет при первой же попытке: две
-        вкладки с одной ссылкой не привяжут два чата.
+        Шаг бота: чат открыл ссылку t.me/...?start=<токен>. Ничего не
+        привязываем, а выдаём второй токен - для ссылки на страницу. Возвращает
+        (токен, "") или (None, причина): "bad" - ссылка не та, устарела или
+        уже использована; "taken" - у этого Telegram уже свой дневник; "has" -
+        к дневнику уже подключён Telegram.
         """
         if not _usable(token):
             return None, "bad"
-        digest, tg_id = _digest(token), int(tg_id)
+        digest, tg_id, now = _digest(token), int(tg_id), time.time()
         with self.storage.atomic() as db:
-            row = db.execute("SELECT user_id, expires_at FROM link_tokens "
-                             "WHERE token_hash=?", (digest,)).fetchone()
+            row = db.execute("SELECT user_id, expires_at, sid_hash FROM link_tokens "
+                             "WHERE token_hash=? AND tg_id IS NULL", (digest,)).fetchone()
             if row is None:
                 return None, "bad"
             db.execute("DELETE FROM link_tokens WHERE token_hash=?", (digest,))
-            user_id, expires_at = int(row[0]), row[1]
-            if expires_at <= time.time():
+            user_id, expires_at, sid_hash = int(row[0]), row[1], row[2]
+            if expires_at <= now or not sid_hash:
                 return None, "bad"
-            owner = db.execute("SELECT tg_id FROM users WHERE user_id=?",
-                               (user_id,)).fetchone()
-            if owner is None:
-                return None, "bad"          # человека удалили, пока ссылка шла
-            if owner[0] == tg_id:
-                return user_id, ""          # уже привязан к нему же - не беда
-            if owner[0] is not None:
-                return None, "has"
-            other = db.execute("SELECT 1 FROM users WHERE tg_id=?", (tg_id,)).fetchone()
-            if other is not None:
-                # Склеивать два дневника молча нельзя: записи одного легли
-                # бы к другому. Пусть человек сам решит, какой оставить.
-                return None, "taken"
-            db.execute("UPDATE users SET tg_id=?, username=?, active_at=? WHERE user_id=?",
-                       (tg_id, (username or "")[:64], time.time(), user_id))
-        return user_id, ""
+            problem = self._link_problem(db, user_id, tg_id)
+            if problem:
+                return None, problem
+            second = secrets.token_urlsafe(32)
+            db.execute("INSERT INTO link_tokens(token_hash, user_id, expires_at, sid_hash, "
+                       "tg_id, username) VALUES(?,?,?,?,?,?)",
+                       (_digest(second), user_id, now + LINK_LIFETIME, sid_hash,
+                        tg_id, (username or "")[:64]))
+        return second, ""
+
+    def confirm_link(self, token, user_id: int, sid: str) -> tuple[int | None, str]:
+        """
+        Шаг страницы: человек открыл вторую ссылку в своём браузере. Годится
+        только для того же человека и той же сессии, что выпустили первую.
+        Возвращает (номер чата, "") или (None, причина) - как offer_link.
+        Токен гаснет при первой же попытке, в том числе чужой.
+        """
+        if not _usable(token) or not _usable(sid):
+            return None, "bad"
+        digest = _digest(token)
+        with self.storage.atomic() as db:
+            row = db.execute("SELECT user_id, expires_at, sid_hash, tg_id, username "
+                             "FROM link_tokens WHERE token_hash=? AND tg_id IS NOT NULL",
+                             (digest,)).fetchone()
+            if row is None:
+                return None, "bad"
+            db.execute("DELETE FROM link_tokens WHERE token_hash=?", (digest,))
+            owner, expires_at, sid_hash, tg_id, username = row
+            if (expires_at <= time.time() or int(owner) != int(user_id)
+                    or not hmac.compare_digest(sid_hash, _digest(sid))):
+                return None, "bad"
+            # Между шагами могло что-то поменяться: проверяем заново
+            problem = self._link_problem(db, int(user_id), int(tg_id))
+            if problem:
+                return None, problem
+            # Согласие, данное на сайте, на чат не переносится: его надо
+            # подтвердить в самом чате (has_chat_consent).
+            db.execute("UPDATE users SET tg_id=?, username=?, tg_consent_version=NULL, "
+                       "active_at=? WHERE user_id=?",
+                       (int(tg_id), username, time.time(), int(user_id)))
+        return int(tg_id), ""
+
+    @staticmethod
+    def _link_problem(db, user_id: int, tg_id: int) -> str:
+        owner = db.execute("SELECT tg_id FROM users WHERE user_id=?", (user_id,)).fetchone()
+        if owner is None:
+            return "bad"                    # человека удалили, пока ссылка шла
+        if owner[0] is not None:
+            return "has"
+        if db.execute("SELECT 1 FROM users WHERE tg_id=?", (tg_id,)).fetchone():
+            # Склеивать два дневника молча нельзя: записи одного легли
+            # бы к другому. Пусть человек сам решит, какой оставить.
+            return "taken"
+        return ""
 
     # ── сессии ────────────────────────────────────────────────────────────
     def open_session(self, user_id: int) -> str:
@@ -389,6 +482,12 @@ class Accounts:
         with self.storage.atomic() as db:
             db.execute("DELETE FROM sessions WHERE sid_hash=?", (_digest(sid),))
 
+    def close_other_sessions(self, user_id: int, keep_sid: str) -> None:
+        """Закрыть все сессии человека, кроме этой: после смены кода."""
+        with self.storage.atomic() as db:
+            db.execute("DELETE FROM sessions WHERE user_id=? AND sid_hash<>?",
+                       (int(user_id), _digest(keep_sid)))
+
     def close_all_sessions(self, user_id: int) -> None:
         """Выйти везде: вход, забытый на чужом компьютере, гаснет вместе с этим."""
         with self.storage.atomic() as db:
@@ -415,13 +514,25 @@ class Accounts:
         return [int(row[0]) for row in rows]
 
     def unconsented(self, days: int = CONSENT_WAIT_DAYS,
-                    now: float | None = None) -> list[int]:
-        """Кто завёл учётную запись дольше `days` дней назад и так и не согласился."""
-        edge = (time.time() if now is None else now) - days * 24 * 60 * 60
+                    now: float | None = None,
+                    site_days: int = SITE_CONSENT_WAIT_DAYS) -> list[int]:
+        """
+        Кто завёл учётную запись и так и не согласился: из бота - дольше
+        `days` дней назад, с сайта (user_id < 0) - дольше `site_days`.
+        """
+        now = time.time() if now is None else now
+        edge, site_edge = now - days * 86400, now - site_days * 86400
         with self.storage.atomic() as db:
-            rows = db.execute("SELECT user_id FROM users "
-                              "WHERE consent_at IS NULL AND created_at < ?", (edge,)).fetchall()
+            rows = db.execute("SELECT user_id FROM users WHERE consent_at IS NULL "
+                              "AND (created_at < ? OR (user_id < 0 AND created_at < ?))",
+                              (edge, site_edge)).fetchall()
         return [int(row[0]) for row in rows]
+
+    def waiting_consent(self) -> int:
+        """Сколько учётных записей ещё без согласия - для потолка новых."""
+        with self.storage.atomic() as db:
+            return db.execute("SELECT COUNT(*) FROM users "
+                              "WHERE consent_at IS NULL").fetchone()[0]
 
     def orphans(self) -> list[str]:
         """

@@ -87,10 +87,16 @@ CREATE TABLE IF NOT EXISTS login_tokens (
 );
 -- Одноразовые ссылки «подключить Telegram» со страницы. Отдельно от
 -- login_tokens: токен привязки не должен открывать страницу, и наоборот.
+-- Два шага (см. Accounts.offer_link): tg_id пустой - ссылка на бота, ещё
+-- не открытая; tg_id есть - бот предложил этот чат, ждём подтверждения со
+-- страницы той же сессии (sid_hash), что выпустила первую ссылку.
 CREATE TABLE IF NOT EXISTS link_tokens (
     token_hash TEXT PRIMARY KEY,
     user_id    INTEGER NOT NULL,
-    expires_at REAL NOT NULL
+    expires_at REAL NOT NULL,
+    sid_hash   TEXT NOT NULL DEFAULT '',
+    tg_id      INTEGER,
+    username   TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS reminders (
     chat_id INTEGER PRIMARY KEY,
@@ -120,6 +126,14 @@ _LATER_COLUMNS = (
     ("users", "code_index", "TEXT"),
     ("users", "code_salt", "TEXT"),
     ("users", "code_hash", "TEXT"),
+    # Согласие, подтверждённое в самом чате Telegram. Нужно тем, кто начал на
+    # сайте и потом подключил Telegram: согласие с сайта - не согласие того,
+    # кто пишет в этот чат (см. Accounts.has_chat_consent).
+    ("users", "tg_consent_version", "TEXT"),
+    # link_tokens мог появиться без этих колонок в промежуточной версии
+    ("link_tokens", "sid_hash", "TEXT NOT NULL DEFAULT ''"),
+    ("link_tokens", "tg_id", "INTEGER"),
+    ("link_tokens", "username", "TEXT NOT NULL DEFAULT ''"),
 )
 
 
@@ -133,8 +147,17 @@ def _add_missing_columns(db: sqlite3.Connection) -> None:
     # колонки: после отката на прежний код и обратно бот успел бы завести
     # людей без tg_id. Номера людей в Telegram всегда положительные; у тех,
     # кто завёл дневник на сайте, user_id отрицательный (см. Accounts.create).
-    db.execute("UPDATE users SET tg_id=user_id WHERE tg_id IS NULL AND user_id>0")
+    #
+    # Номер может быть уже занят: человек с сайта подключил этот Telegram,
+    # пока база жила на прежнем коде. Такого не трогаем - иначе уникальный
+    # индекс уронил бы запуск - и пишем в журнал только число, без номеров.
     db.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_tg ON users(tg_id)")
+    db.execute("UPDATE users SET tg_id=user_id WHERE tg_id IS NULL AND user_id>0 "
+               "AND NOT EXISTS (SELECT 1 FROM users u2 WHERE u2.tg_id=users.user_id)")
+    clashes = db.execute("SELECT COUNT(*) FROM users "
+                         "WHERE tg_id IS NULL AND user_id>0").fetchone()[0]
+    if clashes:
+        print(f"Номер Telegram не проставлен у записей: {clashes} (номер уже занят)")
     db.execute("CREATE INDEX IF NOT EXISTS users_code ON users(code_index)")
     db.commit()
 

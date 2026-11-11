@@ -447,7 +447,8 @@
           <div class="row"><button class="small ghost" onclick="linkTelegram()">Подключить Telegram</button></div>
           <p class="hint" id="tg-link-note" hidden>Откройте ссылку и нажмите в боте «Запустить»:
             <a id="tg-link" href="#" target="_blank" rel="noopener">открыть бота</a>.
-            Ссылка действует десять минут и срабатывает один раз.</p>
+            Бот пришлёт ответную ссылку - откройте её в этом же браузере. Обе ссылки
+            действуют десять минут и срабатывают один раз.</p>
         </div>
         <div class="stack">
           <div class="row"><button class="small ghost" id="code-btn" onclick="personalCode()">Показать код</button></div>
@@ -838,6 +839,28 @@ async function enterCode(){
   field.value = '';
   document.getElementById('gate-error').hidden = true;
   poll();
+}
+
+// Ответная ссылка от бота: /link#t=... Подключает Telegram, только если её
+// открыли в том же браузере, где нажали «Подключить Telegram», - сервер
+// сверяет сессию. Метку CSRF берём из первого опроса состояния.
+async function confirmLink(){
+  const token = new URLSearchParams(location.hash.slice(1)).get('t');
+  history.replaceState(null, '', '/');
+  if(!token) return;
+  await poll();
+  if(!csrf){
+    showGate('Чтобы подключить Telegram, откройте ссылку от бота в том браузере, '
+      + 'где вы вошли в дневник.');
+    return;
+  }
+  try {
+    await talk('/account/telegram/confirm', {token});
+    show({kind: 'bot', from: 'page', text: 'Telegram подключён. Подтвердите согласие '
+      + 'в чате с ботом - после этого записи оттуда будут попадать в дневник.'});
+  } catch(e) {
+    show({kind: 'bot', from: 'page', text: 'Telegram не подключился: ' + e.message});
+  }
 }
 
 function hideGate(){
@@ -1292,6 +1315,7 @@ hello();
 // открытого дневника.
 (async () => {
   if(location.pathname === '/login') await enter();
+  if(location.pathname === '/link') await confirmLink();
   await poll();
   showWeather();
   setInterval(poll, 2000);

@@ -689,7 +689,7 @@ def _short_basis(link) -> str:
 # Без входа в режиме server открыто только это: сама страница (она и есть
 # экран входа), обмен ссылки от бота на сессию, вход по личному коду и
 # «Начать без Telegram». Всё остальное - 401.
-OPEN_GET = ("/", "/login", "/privacy", "/healthz") + tuple(FONTS)
+OPEN_GET = ("/", "/login", "/link", "/privacy", "/healthz") + tuple(FONTS)
 OPEN_POST = ("/auth/login", "/auth/code", "/auth/new")
 
 # Что можно без согласия: увидеть экран согласия, согласиться, выйти,
@@ -726,6 +726,14 @@ CODE_EVERYONE = "*"                 # ключ общего потолка в CO
 # «Начать без Telegram» - 5 новых дневников в час с адреса. Человеку больше
 # не нужно никогда; без потолка скрипт завёл бы тысячи пустых аккаунтов.
 CREATE_LIMIT = limits.Limiter(5, 60 * 60)
+# И на всех сразу: адресов у скрипта может быть много. Плюс потолок тех, кто
+# ещё не согласился, - пустые аккаунты живут сутки, больше 2000 таких разом
+# значит, что их штампуют, а не заводят люди.
+CREATE_TOTAL = limits.Limiter(100, 60 * 60)
+MAX_WAITING_CONSENT = 2000
+# Новый код - 5 раз в час на человека: каждый стоит scrypt, а человеку
+# больше не нужно никогда.
+CODE_CHANGE_LIMIT = limits.Limiter(5, 60 * 60)
 
 # Кто оператор персональных данных - решает владелец, пока не решено.
 # Подставляется в текст политики, пустое значение честно видно как пропуск.
@@ -738,6 +746,13 @@ try:
                                 or accounts.RETENTION_DAYS))
 except ValueError:
     raise SystemExit("MIRA_RETENTION_DAYS: ожидается число дней") from None
+
+# Сколько дней журнал веб-сервера (nginx-proxy) хранит адреса - для текста
+# политики. Сам сервис адреса на диск не пишет; срок задаёт настройка прокси.
+try:
+    PROXY_LOG_DAYS = max(0, int(os.environ.get("MIRA_PROXY_LOG_DAYS", "") or 14))
+except ValueError:
+    raise SystemExit("MIRA_PROXY_LOG_DAYS: ожидается число дней") from None
 
 # Заголовки каждого ответа в режиме server. no-store - на всё, кроме шрифтов:
 # почти каждый ответ несёт чужой дневник, сессию или метку CSRF, а страница
@@ -797,7 +812,7 @@ LOCAL_POST = ("/telegram/connect", "/telegram/disconnect",
               "/telegram/code", "/telegram/unlink")
 SERVER_POST = ("/auth/login", "/auth/code", "/auth/new", "/auth/logout",
                "/auth/logout-all", "/consent", "/account/delete", "/account/code",
-               "/account/telegram")
+               "/account/telegram", "/account/telegram/confirm")
 
 
 def need_login() -> str:
@@ -882,7 +897,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if not self._ours():
             return
-        if path == "/" or (MODE == "server" and path == "/login"):
+        if path == "/" or (MODE == "server" and path in ("/login", "/link")):
             # Перезагрузка страницы разговор не сбрасывает: для этого есть
             # кнопка «Начать заново». /login - та же страница: её скрипт
             # достаёт токен из адреса после # и меняет его на сессию.
@@ -995,11 +1010,13 @@ class Handler(BaseHTTPRequestHandler):
             self._create()
             return
         if path == "/account/code":
-            # Прежний код гаснет: показать его ещё раз нельзя, у нас только хэш
-            self._json({"ok": True, "code": ACCOUNTS.issue_code(self.uid)})
+            self._new_code()
             return
         if path == "/account/telegram":
             self._telegram_link()
+            return
+        if path == "/account/telegram/confirm":
+            self._telegram_confirm(payload)
             return
         if path == "/auth/logout":
             ACCOUNTS.close_session(self.sid)
@@ -1115,7 +1132,11 @@ class Handler(BaseHTTPRequestHandler):
         if not CODE_LIMIT.allow(self._client_ip()) or not CODE_TOTAL.allow(CODE_EVERYONE):
             self._fail(429, "Слишком много попыток входа. Подождите минуту.", retry=60)
             return
-        uid = ACCOUNTS.redeem_code(payload.get("code"))
+        try:
+            uid = ACCOUNTS.redeem_code(payload.get("code"))
+        except accounts.Busy:
+            self._busy()
+            return
         if uid is None:
             self._fail(401, "Код не подошёл. Проверьте, что он переписан без ошибок.")
             return
@@ -1132,10 +1153,66 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(429, "С этого адреса уже заводили несколько дневников. "
                             "Попробуйте через час.", retry=3600)
             return
+        if (not CREATE_TOTAL.allow(CODE_EVERYONE)
+                or ACCOUNTS.waiting_consent() > MAX_WAITING_CONSENT):
+            self._fail(429, "Сейчас новых дневников заводят слишком много. "
+                            "Попробуйте через час.", retry=3600)
+            return
         uid = ACCOUNTS.create()
-        code = ACCOUNTS.issue_code(uid)
+        try:
+            code = ACCOUNTS.issue_code(uid)
+        except accounts.Busy:
+            # Без кода в этот дневник потом не войти - убираем его сразу
+            ACCOUNTS.erase(uid, STORE)
+            self._busy()
+            return
         sid = ACCOUNTS.open_session(uid)
         self._send_json({"ok": True, "code": code}, extra={"Set-Cookie": _cookie(sid)})
+
+    def _new_code(self) -> None:
+        """
+        Новый личный код. Прежний гаснет, и вместе с ним все остальные входы
+        человека: код меняют, когда боятся, что прежний подсмотрели, - значит,
+        и открытые по нему сессии надо закрыть. Эта вкладка остаётся.
+        """
+        if not self._allowed(CODE_CHANGE_LIMIT, "Код меняли слишком часто, "
+                                                "попробуйте через час.", 3600):
+            return
+        try:
+            code = ACCOUNTS.issue_code(self.uid)
+        except accounts.Busy:
+            self._busy()
+            return
+        ACCOUNTS.close_other_sessions(self.uid, self.sid)
+        self._json({"ok": True, "code": code})
+
+    def _busy(self) -> None:
+        self._fail(503, "Сервер сейчас занят, попробуйте через пару секунд.", retry=2)
+
+    def _telegram_confirm(self, payload: dict) -> None:
+        """
+        Вторая ссылка от бота (/link#t=...). Подтвердить её может только та же
+        сессия, что нажала «Подключить Telegram» (см. Accounts.offer_link).
+        """
+        if SERVICE_BOT is None:
+            self._fail(404, "Telegram у этого сервиса не подключён.")
+            return
+        chat_id, problem = ACCOUNTS.confirm_link(payload.get("token"), self.uid, self.sid)
+        if chat_id is None:
+            reason = {"has": "Telegram уже подключён.",
+                      "taken": "Этот Telegram уже ведёт другой дневник Миры."}.get(
+                problem, "Ссылка не сработала: откройте её в том же браузере, где нажали "
+                         "«Подключить Telegram», не позже чем через десять минут.")
+            self._fail(409 if problem in ("has", "taken") else 400, reason)
+            return
+        STORE.attach(chat_id, user_key(self.uid))
+        try:
+            SERVICE_BOT.linked(chat_id)
+        except Exception as exc:
+            # Привязка уже есть; не дошло сообщение - бот попросит согласие
+            # при первой же записи
+            print(f"Сообщение о привязке не ушло: {trace(exc)}")
+        self._json({"ok": True})
 
     def _telegram_link(self) -> None:
         """Одноразовая ссылка на бота, которая привяжет Telegram к этому дневнику."""
@@ -1150,7 +1227,7 @@ class Handler(BaseHTTPRequestHandler):
         if user.get("tg_id") is not None:
             self._fail(409, "Telegram уже подключён.")
             return
-        token = ACCOUNTS.issue_link(self.uid)
+        token = ACCOUNTS.issue_link(self.uid, self.sid)
         self._json({"ok": True, "link": f"https://t.me/{BOT_NAME}?start={token}"})
 
     def _admit(self, csrf: bool = False) -> bool:
@@ -1209,12 +1286,12 @@ class Handler(BaseHTTPRequestHandler):
         if trusted:
             real = (self.headers.get("X-Real-IP") or "").strip()
             if real:
-                return real
+                return _per_network(real)
             # nginx дописывает адрес клиента в конец списка - ему и верим
             forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[-1].strip()
             if forwarded:
-                return forwarded
-        return peer
+                return _per_network(forwarded)
+        return _per_network(peer)
 
     def _session_cookie(self) -> str:
         """
@@ -1420,6 +1497,23 @@ def _our_origin(origin: str) -> bool:
     return parsed.hostname in LOCAL_HOSTS
 
 
+def _per_network(address: str) -> str:
+    """
+    Кого считать одним «адресом» для потолков. IPv6 сводим к сети /64: её
+    обычно выдают одному абоненту целиком, и перебирать адреса внутри неё
+    бесплатно - иначе потолок «10 в минуту с адреса» не держал бы ничего.
+    """
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return address[:64]
+    if ip.version == 6:
+        if ip.ipv4_mapped is not None:
+            return str(ip.ipv4_mapped)      # ::ffff:1.2.3.4 - это адрес IPv4
+        return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+    return str(ip)
+
+
 def _cookie(sid: str, forget: bool = False) -> str:
     """
     Cookie сессии. Приставка __Host- заставляет браузер принять её только с
@@ -1523,6 +1617,7 @@ def privacy() -> bytes:
     return (text.replace("{OPERATOR}", operator)
                 .replace("{CONSENT_VERSION}", html.escape(CONSENT_VERSION))
                 .replace("{RETENTION_DAYS}", str(RETENTION_DAYS))
+                .replace("{PROXY_LOG_DAYS}", str(PROXY_LOG_DAYS))
                 .encode("utf-8"))
 
 

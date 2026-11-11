@@ -117,6 +117,8 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "CODE_LIMIT", limits.Limiter(10, 60))
     monkeypatch.setattr(server, "CODE_TOTAL", limits.Limiter(100, 60))
     monkeypatch.setattr(server, "CREATE_LIMIT", limits.Limiter(5, 3600))
+    monkeypatch.setattr(server, "CREATE_TOTAL", limits.Limiter(100, 3600))
+    monkeypatch.setattr(server, "CODE_CHANGE_LIMIT", limits.Limiter(5, 3600))
     monkeypatch.setattr(server, "BOT_NAME", "")
     # Город проверяется геокодингом, погода - запросом в сеть. В тестах сети
     # нет: город «находится» всегда, погоды нет никогда.
