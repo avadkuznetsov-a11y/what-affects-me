@@ -15,6 +15,7 @@
 """
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import threading
@@ -26,6 +27,7 @@ from urllib.parse import parse_qs, urlparse
 from bot.telegram import TelegramBot, token_is_shaped_right
 from demo.generate import build
 from wam import dialog, export, food, weather
+from wam.accounts import COOKIE, SESSION_LIFETIME, Accounts, csrf_for, user_key
 from wam.derive import derive_factors
 from wam.diary import DiaryStore
 from wam import storage
@@ -78,7 +80,20 @@ PARSER = dialog.Parser(ENGINE_NAME, _COMPLETE)
 # Дневник один на процесс: то, что человек написал боту в Telegram, видно на
 # странице, и наоборот. Лежит он в файле рядом с программой и переживает
 # перезапуск - человек ведёт дневник неделями.
+if MODE == "server":
+    # Каталог data на сервере может быть ещё пустым томом: заводим его до
+    # хранилища, иначе база не откроется и сервис не поднимется.
+    DB_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
 STORE = DiaryStore(DB_FILE)
+
+# Учёт людей: нужен только в режиме server, но таблицы лежат в том же файле и
+# в режиме local просто пустуют. Без файла (база недоступна) учёта нет, и
+# режим server на таком не запустится - см. main().
+ACCOUNTS = Accounts(STORE.storage) if STORE.storage is not None else None
+
+# Имя бота сервиса: страница называет его тем, кто ещё не вошёл. Узнаём при
+# запуске у Telegram (getMe), в режиме local не нужно.
+BOT_NAME = ""
 
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
 MAX_BODY = 64 * 1024
@@ -132,7 +147,8 @@ def page() -> bytes:
                          ensure_ascii=False).replace("</", "<\\/")
     html = (html.replace("__ENGINE__", ENGINE_NAME)
                 .replace("__PERIODS__", periods)
-                .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS)))
+                .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS))
+                .replace("__BOT__", BOT_NAME))
     return html.encode("utf-8")
 
 
@@ -621,37 +637,38 @@ def _short_basis(link) -> str:
 
 # ── HTTP ──────────────────────────────────────────────────────────────────
 
+# Без входа в режиме server открыто только это: сама страница (она и есть
+# экран входа) и обмен ссылки от бота на сессию. Всё остальное - 401.
+OPEN_GET = ("/", "/login")
+OPEN_POST = ("/auth/login",)
+
+POST_PATHS = ("/say", "/summary", "/reset", "/city", "/weather", "/food")
+LOCAL_POST = ("/telegram/connect", "/telegram/disconnect",
+              "/telegram/code", "/telegram/unlink")
+SERVER_POST = ("/auth/login", "/auth/logout")
+
+
 class Handler(BaseHTTPRequestHandler):
+    # Чей это запрос. Заполняет _admit() и только он; до проверки входа
+    # _user_key() отказывается называть дневник.
+    uid: int | None = None
+    sid: str = ""
+
     def do_GET(self):
+        self.uid, self.sid = None, ""
         if not self._ours():
             return
         path = urlparse(self.path).path
-        if path == "/":
+        if path == "/" or (MODE == "server" and path == "/login"):
             # Перезагрузка страницы разговор не сбрасывает: для этого есть
-            # кнопка «Начать заново».
+            # кнопка «Начать заново». /login - та же страница: её скрипт
+            # достаёт токен из адреса после # и меняет его на сессию.
             self._send(page(), "text/html; charset=utf-8")
-        elif path == "/state":
-            since = _int_param(self.path, "since")
-            # Панель бота спрашиваем до замка дневника: она берёт замок
-            # хранилища, а хранилище местами берёт замок дневника под своим -
-            # обратный порядок рано или поздно свёл бы два потока намертво.
-            telegram = RUNNER.state()
-            diary = STORE.get(self._user_key())
-            # Лента и номер - одним куском: сообщение из чата, легшее между
-            # ними, страница больше никогда не покажет - поставит по нему
-            # lastSeq. Заодно feed не перебирает список, который в этот
-            # момент подрезает другой поток.
-            with diary.lock:
-                messages, seq = diary.feed(_shown(since, diary.seq)), diary.seq
-                city = diary.city
-            # Какой источник погоды работает - видно в панели: у человека с
-            # ключом Яндекса и без него погода приходит из разных мест, и
-            # понять по цифрам, из какого именно, нельзя.
-            self._json({"telegram": telegram, "messages": messages, "seq": seq,
-                        "city": city, "weather_source": weather.source_name(),
-                        # Молчаливый откат на словарь - обман: на странице
-                        # написано, что речь разбирает модель, а она молчит.
-                        "model_error": PARSER.last_error})
+            return
+        if not self._admit():
+            return
+        if path == "/state":
+            self._state()
         elif path == "/export":
             # Выгрузка ничего не меняет, поэтому GET: страница забирает её
             # обычным fetch и сохраняет файл сама. Чужому сайту она не достанется
@@ -665,13 +682,55 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _state(self) -> None:
+        since = _int_param(self.path, "since")
+        if MODE == "server":
+            # Панели бота со страницы в режиме server нет: бот у сервиса один,
+            # и человек привязан к нему с первого /start.
+            telegram = None
+        else:
+            # Панель бота спрашиваем до замка дневника: она берёт замок
+            # хранилища, а хранилище местами берёт замок дневника под своим -
+            # обратный порядок рано или поздно свёл бы два потока намертво.
+            telegram = RUNNER.state()
+        diary = STORE.get(self._user_key())
+        # Лента и номер - одним куском: сообщение из чата, легшее между
+        # ними, страница больше никогда не покажет - поставит по нему
+        # lastSeq. Заодно feed не перебирает список, который в этот
+        # момент подрезает другой поток.
+        with diary.lock:
+            messages, seq = diary.feed(_shown(since, diary.seq)), diary.seq
+            city = diary.city
+        # Какой источник погоды работает - видно в панели: у человека с
+        # ключом Яндекса и без него погода приходит из разных мест, и
+        # понять по цифрам, из какого именно, нельзя.
+        state = {"mode": MODE, "messages": messages, "seq": seq,
+                 "city": city, "weather_source": weather.source_name(),
+                 # Молчаливый откат на словарь - обман: на странице
+                 # написано, что речь разбирает модель, а она молчит.
+                 "model_error": PARSER.last_error}
+        if MODE == "server":
+            user = ACCOUNTS.user(self.uid) or {}
+            state["account"] = {"username": user.get("username", ""), "bot": BOT_NAME}
+            # Метка для заголовка X-CSRF: без неё страница не сможет ничего
+            # отправить. Отдаём только своей странице - чужую отсеял _ours().
+            state["csrf"] = csrf_for(self.sid)
+            self._send_json(state, extra={"Set-Cookie": _cookie(self.sid)})
+        else:
+            state["telegram"] = telegram
+            self._json(state)
+
     def do_POST(self):
+        self.uid, self.sid = None, ""
         if not self._ours():
             return
         path = urlparse(self.path).path
-        if path not in ("/say", "/summary", "/reset", "/city", "/weather", "/food",
-                        "/telegram/connect", "/telegram/disconnect",
-                        "/telegram/code", "/telegram/unlink"):
+        known = POST_PATHS + (SERVER_POST if MODE == "server" else LOCAL_POST)
+        if MODE == "server" and not self._json_body():
+            return
+        if MODE == "server" and path not in OPEN_POST and not self._admit(csrf=True):
+            return
+        if path not in known:
             self._drain()
             self.send_error(404)
             return
@@ -679,6 +738,14 @@ class Handler(BaseHTTPRequestHandler):
         payload = self._payload()
         if payload is None:
             return                      # ответ уже отправлен
+
+        if path == "/auth/login":
+            self._login(payload)
+            return
+        if path == "/auth/logout":
+            ACCOUNTS.close_session(self.sid)
+            self._send_json({"ok": True}, extra={"Set-Cookie": _cookie("", forget=True)})
+            return
 
         key = self._user_key()
         if path == "/say":
@@ -719,13 +786,80 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"ok": True, "code": RUNNER.new_code()})
 
+    # ── вход ──────────────────────────────────────────────────────────────
+    def _login(self, payload: dict) -> None:
+        """
+        Обменять токен из ссылки бота на сессию. Токен гаснет при первой же
+        попытке, удачной или нет по сроку: второй раз по той же ссылке не
+        войти никому, в том числе тому, кто подсмотрел её в переписке.
+        """
+        uid = ACCOUNTS.redeem_login(payload.get("token"))
+        if uid is None:
+            self._fail(401, "Ссылка не сработала: она живёт десять минут и открывается "
+                            "один раз. Напишите боту /login - он пришлёт новую.")
+            return
+        sid = ACCOUNTS.open_session(uid)
+        self._send_json({"ok": True}, extra={"Set-Cookie": _cookie(sid)})
+
+    def _admit(self, csrf: bool = False) -> bool:
+        """
+        Пустить запрос к дневнику. В режиме local пускаем всех: дневник один и
+        лежит на машине самого человека. В режиме server нужна живая сессия, а
+        для запросов, которые что-то меняют, ещё и метка CSRF этой сессии.
+        """
+        if MODE != "server":
+            return True
+        sid = self._session_cookie()
+        uid = ACCOUNTS.session_user(sid) if sid else None
+        if uid is None:
+            self._drain()
+            self._fail(401, "Нужно войти: напишите боту /start или /login.")
+            return False
+        if csrf and not hmac.compare_digest(self.headers.get("X-CSRF") or "",
+                                            csrf_for(sid)):
+            self._drain()
+            self._fail(403, "Запрос без метки страницы. Обновите страницу.")
+            return False
+        self.uid, self.sid = uid, sid
+        return True
+
+    def _session_cookie(self) -> str:
+        """
+        Ключ сессии из заголовка Cookie. Разбираем руками: SimpleCookie на
+        одной кривой чужой cookie того же домена отказывается читать и все
+        остальные, и человек оказывается выкинутым из дневника.
+        """
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            name, _, value = part.strip().partition("=")
+            if name == COOKIE:
+                return value.strip()
+        return ""
+
+    def _json_body(self) -> bool:
+        """
+        В режиме server POST принимаем только с JSON в теле. Форма с чужого
+        сайта не может поставить такой тип без предварительного запроса, а
+        его браузер чужому сайту не одобрит - ещё один заслон от CSRF.
+        """
+        if self.headers.get_content_type() == "application/json":
+            return True
+        self._drain()
+        self._fail(415, "ожидается application/json")
+        return False
+
     def _user_key(self) -> str:
         """
         Чей дневник открыт в этом запросе. Ключ берётся только отсюда и никогда
         из тела запроса: иначе любой подставит чужой номер и прочтёт чужие
         записи. В режиме local дневник один, страницы.
         """
-        return WEB_KEY
+        if MODE != "server":
+            return WEB_KEY
+        if self.uid is None:
+            # Ошибка в самой программе: обработчик дошёл до дневника, не
+            # проверив вход. Лучше упасть, чем отдать чей-то дневник.
+            raise RuntimeError("дневник спрошен до проверки входа")
+        return user_key(self.uid)
 
     def _connect(self, payload: dict) -> None:
         """
@@ -752,16 +886,27 @@ class Handler(BaseHTTPRequestHandler):
         """
         Запрос точно от нашей страницы, а не от чужой, открытой в том же
         браузере: иначе любой сайт заберёт код привязки к дневнику.
+
+        В режиме local своя страница - это 127.0.0.1. В режиме server - только
+        MIRA_PUBLIC_HOST по https: сервис стоит за nginx-proxy, и другой Host
+        значит, что запрос пришёл в обход него или подделан.
         """
-        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]")
-        if host not in ("127.0.0.1", "localhost", "::1"):
+        host = (self.headers.get("Host") or "").rsplit(":", 1)[0].strip("[]").lower()
+        hosts = (PUBLIC_HOST,) if MODE == "server" else LOCAL_HOSTS
+        if not host or host not in hosts:
             self._drain()
             self._fail(403, "запрос не с этой страницы")
             return False
         origin = self.headers.get("Origin")
-        if origin and urlparse(origin).hostname not in ("127.0.0.1", "localhost", "::1"):
+        if origin and not _our_origin(origin):
             self._drain()
             self._fail(403, "запрос с другого сайта")
+            return False
+        # POST браузер всегда шлёт с Origin. Нет его - значит, запрос собран
+        # не браузером на нашей странице, а в режиме server такое не пускаем.
+        if MODE == "server" and self.command == "POST" and not origin:
+            self._drain()
+            self._fail(403, "запрос без адреса страницы")
             return False
         # Origin шлют не всегда: у картинки, скрипта и перехода по ссылке его
         # нет, а запрос всё равно чужой. Про это честно говорит Sec-Fetch-Site:
@@ -824,8 +969,11 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
     def _json(self, data):
+        self._send_json(data)
+
+    def _send_json(self, data, code: int = 200, extra: dict[str, str] | None = None):
         self._send(json.dumps(data, ensure_ascii=False).encode("utf-8"),
-                   "application/json; charset=utf-8")
+                   "application/json; charset=utf-8", code, extra)
 
     def _send(self, body: bytes, content_type: str, code: int = 200,
               extra: dict[str, str] | None = None):
@@ -839,6 +987,34 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+
+LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _our_origin(origin: str) -> bool:
+    """Origin нашей страницы: в local - 127.0.0.1, в server - https://MIRA_PUBLIC_HOST."""
+    try:
+        parsed = urlparse(origin)
+        port = parsed.port
+    except ValueError:
+        return False
+    if MODE == "server":
+        return (parsed.scheme == "https" and parsed.hostname == PUBLIC_HOST
+                and port is None)
+    return parsed.hostname in LOCAL_HOSTS
+
+
+def _cookie(sid: str, forget: bool = False) -> str:
+    """
+    Cookie сессии. Приставка __Host- заставляет браузер принять её только с
+    Secure, без Domain и с Path=/: поддомен или страница по http её не
+    подменят. HttpOnly - скрипт страницы ключа не видит, даже если в неё
+    что-то внедрят. SameSite=Lax - чужой сайт не отправит её своим POST.
+    """
+    age = 0 if forget else SESSION_LIFETIME
+    return (f"{COOKIE}={'' if forget else sid}; Path=/; Max-Age={age}; "
+            "HttpOnly; Secure; SameSite=Lax")
 
 
 def _int_param(path: str, name: str, default: int = 0) -> int:
@@ -918,15 +1094,28 @@ def _checked(payload: dict) -> tuple[str, dict | None, int, int]:
     return text, ring, days, since
 
 
+def _check_server_settings() -> None:
+    """
+    Режим server без своего адреса или без базы не запускаем: без адреса
+    нечем сверять Host и Origin, без базы негде хранить сессии - сервис
+    поднялся бы, но пускал бы не тех или не пускал никого.
+    """
+    if not PUBLIC_HOST:
+        raise SystemExit("MIRA_MODE=server: задайте MIRA_PUBLIC_HOST, например mira.example.ru")
+    if ACCOUNTS is None:
+        raise SystemExit(f"MIRA_MODE=server: база {DB_FILE} недоступна, "
+                         "проверьте MIRA_DB и права на каталог")
+
+
 def main() -> None:
     # Перенос старого города делаем при запуске программы, а не при импорте:
     # модуль импортируют и тесты, а трогать файлы человека они не должны.
     _move_city_from_file()
     threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
     if MODE == "server":
+        _check_server_settings()
         # Каталог с базой - только владельцу процесса. Сам файл sqlite
         # заводит хранилище с правами 0600.
-        DB_FILE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(DB_FILE.parent, 0o700)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")

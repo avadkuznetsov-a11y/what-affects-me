@@ -26,6 +26,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -62,6 +63,32 @@ CREATE TABLE IF NOT EXISTS facts (
 CREATE TABLE IF NOT EXISTS chats (
     chat_id INTEGER PRIMARY KEY,
     diary   TEXT NOT NULL
+);
+-- Ниже - только для режима server (wam/accounts.py). В режиме local таблицы
+-- заводятся пустыми и так и лежат: проще, чем держать две схемы.
+CREATE TABLE IF NOT EXISTS users (
+    user_id         INTEGER PRIMARY KEY,
+    username        TEXT NOT NULL DEFAULT '',
+    created_at      REAL NOT NULL,
+    consent_at      REAL,
+    consent_version TEXT
+);
+CREATE TABLE IF NOT EXISTS sessions (
+    sid_hash   TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    created_at REAL NOT NULL,
+    seen_at    REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS login_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    expires_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reminders (
+    chat_id INTEGER PRIMARY KEY,
+    at      INTEGER,
+    off     INTEGER NOT NULL DEFAULT 0,
+    sent    TEXT NOT NULL DEFAULT ''
 );
 """
 
@@ -268,6 +295,19 @@ class Storage:
                     self._db.execute("DELETE FROM chats WHERE chat_id=?", (int(chat_id),))
             except sqlite3.Error as exc:
                 self._failed(exc)
+
+    @contextmanager
+    def atomic(self):
+        """
+        Соединение под замком хранилища и в одной транзакции: всё внутри
+        записывается целиком или не записывается вовсе. Нужно учёту людей и
+        напоминаниям - у них свои таблицы в том же файле, а второе соединение
+        к одной базе из одного процесса ловит «database is locked».
+
+        Ошибку sqlite не глотаем: тот, кто пишет, должен знать, что не вышло.
+        """
+        with self._lock, self._db:
+            yield self._db
 
     def close(self) -> None:
         with self._lock:

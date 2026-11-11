@@ -342,6 +342,11 @@ class DiaryStore:
                              if key.startswith("tg:") and key not in bound})
         self._forget_guests()
 
+    @property
+    def storage(self) -> Storage | None:
+        """Файл, в котором лежат дневники. Нужен учёту людей: у него там свои таблицы."""
+        return self._storage
+
     def get(self, key: str) -> Diary:
         """Дневник по ключу; один ключ - всегда один и тот же дневник."""
         with self._lock:
@@ -442,6 +447,47 @@ class DiaryStore:
                 self._storage.drop_chat(chat_id)
             return True
 
+    def attach(self, chat_id: int, key: str) -> None:
+        """
+        Привязать чат к дневнику без кода. Так работает режим server: человек
+        пишет боту /start, бот знает его номер в Telegram, и спрашивать код
+        незачем - чат и есть сам человек.
+        """
+        with self._lock:
+            if self._chats.get(chat_id) == key:
+                return
+            self._chats[chat_id] = key
+            if self._storage is not None:
+                self._storage.set_chat(chat_id, key)
+
+    def forget(self, key: str) -> None:
+        """
+        Стереть дневник совсем: записи, город, привязку чатов и коды. Это
+        удаление по просьбе человека, а не уборка - после него от дневника не
+        должно остаться ничего ни в памяти, ни в файле.
+
+        Дневник, который кто-то успел взять до удаления, отрезаем от файла:
+        иначе шаг разговора, начатый за секунду до удаления, записал бы день
+        обратно, и удалённое вернулось бы после перезапуска.
+        """
+        with self._lock:
+            diary = self._diaries.pop(key, None)
+            self._guests.pop(key, None)
+            for chat in [chat for chat, value in self._chats.items() if value == key]:
+                del self._chats[chat]
+                if self._storage is not None:
+                    self._storage.drop_chat(chat)
+            self._codes = {code: value for code, value in self._codes.items()
+                           if value[0] != key}
+            if diary is not None:
+                with diary.lock:
+                    diary._storage = None
+                    diary.timeline = Timeline()
+                    diary.city = ""
+                    diary.messages = []
+            if self._storage is not None:
+                self._storage.drop_diary(key)
+
     def key_for_chat(self, chat_id: int) -> str:
         """
         Ключ дневника для чата. Непривязанный чат получает свой собственный
@@ -497,6 +543,11 @@ class DiaryStore:
     def _forget_guests(self) -> None:
         """Дневники непривязанных чатов: старые и лишние выкидываем."""
         deadline = time.time() - GUEST_LIFETIME
+        # Дневники людей сервиса (u:<номер>) - не гостевые, и выкидывать их по
+        # сроку нельзя ни при каких обстоятельствах: это записи за месяцы.
+        # Сюда они попадать не должны, но проверка дешевле потерянного дневника.
+        for key in [key for key in self._guests if key.startswith("u:")]:
+            del self._guests[key]
         drop = {key for key, seen in self._guests.items() if seen < deadline}
         if len(self._guests) - len(drop) > GUEST_DIARIES:
             # Лишние - те, в которые дольше всех не писали
