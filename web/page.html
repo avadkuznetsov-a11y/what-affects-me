@@ -207,6 +207,12 @@
 
  .tabs{display:none}
 
+ /* Экран до дневника в режиме server: вход и согласие. Один блок посередине
+    в том же стиле, что и панели справа. */
+ .gate{flex:1;width:100%;max-width:560px;margin:0 auto;padding:18px 24px 24px}
+ .gate .body p{margin:0}
+ .gate a{color:var(--accent)}
+
  /* Телефон: разговор занимает экран, панели переключаются полосой внизу. */
  @media (max-width:860px){
   .top{padding:12px 16px;background:var(--bg);border-bottom:1px solid var(--rule)}
@@ -238,6 +244,7 @@
   body[data-tab=insights] .panel>:not([data-panel=insights]),
   body[data-tab=sources] .panel>:not([data-panel=sources]),
   body[data-tab=telegram] .panel>:not([data-panel=telegram]){display:none}
+  .gate{padding:16px}
  }
 </style></head><body>
 
@@ -246,7 +253,22 @@
   <div class="tagline">дневник, который ищет причины</div>
 </header>
 
-<main class="grid">
+<!-- Режим server: пока человек не вошёл, вместо дневника этот блок. В режиме
+     local он не показывается никогда. -->
+<main class="gate" id="gate" hidden>
+  <section class="block" id="gate-login">
+    <div class="head"><h2>Вход в дневник</h2></div>
+    <div class="body">
+      <p>Дневник открывается по ссылке от бота Миры в Telegram.</p>
+      <p class="hint" id="gate-how">Напишите боту команду /start - он пришлёт ссылку для входа.
+        Ссылка действует десять минут и открывается один раз. Чтобы войти снова,
+        напишите боту /login.</p>
+      <p class="warn" id="gate-error" hidden></p>
+    </div>
+  </section>
+</main>
+
+<main class="grid" id="grid">
   <section class="chat">
     <div class="head">
       <div class="who"><i></i>Разговор с Мирой</div>
@@ -638,13 +660,61 @@ function trouble(text){
 // Все запросы к программе идут отсюда. Отказ сервера - это не тишина: раньше
 // на 400 или 403 сообщение просто пропадало из поля, и человек не понимал,
 // почему ничего не произошло.
+// В режиме server каждый POST несёт метку сессии в X-CSRF: без неё сервер
+// отвечает 403. Метку страница получает из /state. В режиме local метки нет,
+// и сервер её не спрашивает.
+let csrf = '';
+
 async function talk(path, body){
-  const options = body === undefined ? {} : {method:'POST', body: JSON.stringify(body)};
+  const options = body === undefined ? {} : {method:'POST', body: JSON.stringify(body),
+    headers: Object.assign({'Content-Type': 'application/json'}, csrf ? {'X-CSRF': csrf} : {})};
   const r = await fetch(path, options);
   let answer = {};
   try { answer = await r.json(); } catch(e) { answer = {}; }
+  if(r.status === 401 && path !== '/auth/login') showGate();
   if(!r.ok) throw new Error(answer.error || 'программа ответила ошибкой ' + r.status);
   return answer;
+}
+
+// ── вход (режим server) ───────────────────────────────────────────────────
+const BOT = '__BOT__';
+
+function showGate(error){
+  document.getElementById('gate').hidden = false;
+  document.getElementById('grid').hidden = true;
+  document.querySelector('.tabs').hidden = true;
+  if(BOT){
+    const how = document.getElementById('gate-how');
+    how.textContent = '';
+    how.append('Напишите ');
+    const link = document.createElement('a');
+    link.href = 'https://t.me/' + encodeURIComponent(BOT);
+    link.textContent = '@' + BOT;
+    how.append(link, ' команду /start - бот пришлёт ссылку для входа. Ссылка действует '
+      + 'десять минут и открывается один раз. Чтобы войти снова, напишите боту /login.');
+  }
+  const box = document.getElementById('gate-error');
+  if(error !== undefined){ box.textContent = error; box.hidden = !error; }
+}
+
+function hideGate(){
+  document.getElementById('gate').hidden = true;
+  document.getElementById('grid').hidden = false;
+  document.querySelector('.tabs').hidden = false;
+}
+
+// Ссылка от бота: /login#t=... Токен стоит после #, поэтому на сервер с адресом
+// он не уходит и в журналы не попадает. Забираем его, сразу стираем из адреса
+// и меняем на сессию.
+async function enter(){
+  const token = new URLSearchParams(location.hash.slice(1)).get('t');
+  history.replaceState(null, '', '/');
+  if(!token) return;
+  try {
+    await talk('/auth/login', {token});
+  } catch(e) {
+    showGate(e.message);
+  }
 }
 
 async function send(){
@@ -872,19 +942,33 @@ function drawTelegram(extra){
   box.hidden = !problem;
 }
 
+// Режим server: человек вошёл. Запоминаем метку CSRF и открываем дневник.
+// Ответ false - дневник показывать нельзя, остальной разбор состояния не нужен.
+function drawAccount(state){
+  csrf = state.csrf || '';
+  hideGate();
+  return true;
+}
+
 // Опрос раз в две секунды и только когда вкладка открыта: держать соединение
 // в свёрнутом браузере незачем.
 async function poll(){
   if(document.hidden) return;
   try {
     const r = await fetch('/state?since=' + lastSeq);
+    if(r.status === 401){ showGate(); return; }
     // Отказ - не повод затирать панель: без этой проверки текст ошибки
     // разбирался как состояние и панель Telegram гасла на пустом объекте.
     if(!r.ok) return;
     const state = await r.json();
-    if(!state || !state.telegram) return;
-    telegram = state.telegram;
-    drawTelegram(null);
+    if(!state) return;
+    if(state.mode === 'server'){
+      if(!drawAccount(state)) return;
+    } else {
+      if(!state.telegram) return;
+      telegram = state.telegram;
+      drawTelegram(null);
+    }
     // Город живёт в программе, а не во вкладке: перезагрузили страницу -
     // поле снова показывает то, что было выбрано.
     if(typeof state.city === 'string' && state.city !== city){
@@ -939,13 +1023,19 @@ function today(){
 }
 
 drawSources();
-showWeather();
 drawPeriods();
 today();
 tab('chat');
 lbl();
 hello();
-poll();
-setInterval(poll, 2000);
+// Сначала вход по ссылке, потом всё, что ходит к серверу: без сессии эти
+// запросы получили бы 401 и показали бы экран входа поверх только что
+// открытого дневника.
+(async () => {
+  if(location.pathname === '/login') await enter();
+  await poll();
+  showWeather();
+  setInterval(poll, 2000);
+})();
 document.addEventListener('visibilitychange', () => { if(!document.hidden) poll(); });
 </script></body></html>
