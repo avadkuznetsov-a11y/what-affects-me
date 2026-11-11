@@ -10,7 +10,9 @@
 
 Это режим по умолчанию, MIRA_MODE=local: один человек на своей машине, один
 дневник, без входа. MIRA_MODE=server - сервис для многих людей: у каждого свой
-дневник, вход по ссылке от бота, согласие, удаление данных. Чем режимы
+дневник, вход по личному коду или по ссылке от бота, согласие, удаление
+данных. Telegram в режиме server необязателен: без TELEGRAM_TOKEN сервис
+работает только через сайт. Чем режимы
 отличаются, расписано в docs/PLAN_SERVER.md и в README.
 """
 from __future__ import annotations
@@ -111,6 +113,8 @@ BOT_NAME = ""
 
 # Бот сервиса в режиме server. Через него же идёт удаление человека со
 # страницы: у бота в памяти расписание напоминаний, и его надо почистить тоже.
+# None - TELEGRAM_TOKEN не задан: сервис работает только через сайт, а всё
+# про Telegram на странице спрятано.
 SERVICE_BOT: TelegramBot | None = None
 
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
@@ -171,7 +175,9 @@ def page() -> bytes:
     html = (html.replace("__ENGINE__", ENGINE_NAME)
                 .replace("__PERIODS__", periods)
                 .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS))
-                .replace("__BOT__", BOT_NAME))
+                .replace("__BOT__", BOT_NAME)
+                # Есть ли у сервиса бот: без него страница не зовёт в Telegram
+                .replace("__TG__", "1" if SERVICE_BOT is not None else ""))
     return html.encode("utf-8")
 
 
@@ -681,16 +687,18 @@ def _short_basis(link) -> str:
 # ── HTTP ──────────────────────────────────────────────────────────────────
 
 # Без входа в режиме server открыто только это: сама страница (она и есть
-# экран входа) и обмен ссылки от бота на сессию. Всё остальное - 401.
+# экран входа), обмен ссылки от бота на сессию, вход по личному коду и
+# «Начать без Telegram». Всё остальное - 401.
 OPEN_GET = ("/", "/login", "/privacy", "/healthz") + tuple(FONTS)
-OPEN_POST = ("/auth/login",)
+OPEN_POST = ("/auth/login", "/auth/code", "/auth/new")
 
 # Что можно без согласия: увидеть экран согласия, согласиться, выйти,
 # удалить себя и забрать свои записи - доступ к своим данным не должен
 # зависеть от нового согласия (после смены текста политики, например).
 # Писать в дневник и смотреть его без согласия нельзя.
+# Личный код - тоже: это ключ к своему же дневнику, а не запись в него.
 NO_CONSENT = ("/state", "/consent", "/auth/logout", "/auth/logout-all",
-              "/account/delete", "/export")
+              "/account/delete", "/export", "/account/code")
 
 # Слово, которым человек подтверждает удаление всего. То же, что в боте.
 ERASE_WORD = "УДАЛИТЬ"
@@ -707,6 +715,17 @@ WEATHER_LIMIT = limits.Limiter(10, 60 * 60)
 SUMMARY_LIMIT = limits.Limiter(10, 60)
 FOOD_LIMIT = limits.Limiter(10, 60)
 CITY_LIMIT = limits.Limiter(10, 60 * 60)
+# Вход по личному коду: 10 попыток в минуту с адреса и общий потолок на всех
+# сразу - против перебора с многих адресов. Общий потолок при атаке закрывает
+# вход по коду и честным людям, но лишь на минуту, а дневники остаются целы.
+# Каждая попытка с совпавшим отпечатком стоит scrypt, это ещё и защита от
+# того, чтобы сервис не заняли одними проверками.
+CODE_LIMIT = limits.Limiter(10, 60)
+CODE_TOTAL = limits.Limiter(100, 60)
+CODE_EVERYONE = "*"                 # ключ общего потолка в CODE_TOTAL
+# «Начать без Telegram» - 5 новых дневников в час с адреса. Человеку больше
+# не нужно никогда; без потолка скрипт завёл бы тысячи пустых аккаунтов.
+CREATE_LIMIT = limits.Limiter(5, 60 * 60)
 
 # Кто оператор персональных данных - решает владелец, пока не решено.
 # Подставляется в текст политики, пустое значение честно видно как пропуск.
@@ -776,8 +795,16 @@ def page_policy(body: bytes) -> str:
 POST_PATHS = ("/say", "/summary", "/reset", "/city", "/weather", "/food")
 LOCAL_POST = ("/telegram/connect", "/telegram/disconnect",
               "/telegram/code", "/telegram/unlink")
-SERVER_POST = ("/auth/login", "/auth/logout", "/auth/logout-all", "/consent",
-               "/account/delete")
+SERVER_POST = ("/auth/login", "/auth/code", "/auth/new", "/auth/logout",
+               "/auth/logout-all", "/consent", "/account/delete", "/account/code",
+               "/account/telegram")
+
+
+def need_login() -> str:
+    """Что сказать тому, кто не вошёл. Про бота - только если бот есть."""
+    if SERVICE_BOT is not None:
+        return ("Нужно войти: введите личный код или напишите боту /start или /login.")
+    return "Нужно войти: введите личный код или начните дневник заново."
 
 
 class _Gone(Exception):
@@ -829,7 +856,7 @@ class Handler(BaseHTTPRequestHandler):
             handle()
         except _Gone:
             if not self.answered:
-                self._fail(401, "Нужно войти: напишите боту /start или /login.")
+                self._fail(401, need_login())
         except ConnectionError:
             raise                       # клиент ушёл - отвечать некому
         except Exception as exc:
@@ -892,10 +919,9 @@ class Handler(BaseHTTPRequestHandler):
         if MODE == "server" and not ACCOUNTS.has_consent(self.uid):
             # Без согласия - только то, что нужно экрану согласия: ни ленты,
             # ни города. Метка CSRF нужна, чтобы нажать «Согласен».
-            user = ACCOUNTS.user(self.uid) or {}
             self._send_json({"mode": MODE, "consent_needed": True,
                              "consent_version": CONSENT_VERSION, "csrf": csrf_for(self.sid),
-                             "account": {"username": user.get("username", ""), "bot": BOT_NAME}},
+                             "account": _account(self.uid)},
                             extra={"Set-Cookie": _cookie(self.sid)})
             return
         if MODE == "server":
@@ -928,8 +954,7 @@ class Handler(BaseHTTPRequestHandler):
             # один. Текст ошибки бывает с кусками ответа модели, а в нём -
             # чужие слова. Поэтому на сервере - только сам факт.
             state["model_error"] = "модель сейчас не отвечает" if PARSER.last_error else ""
-            user = ACCOUNTS.user(self.uid) or {}
-            state["account"] = {"username": user.get("username", ""), "bot": BOT_NAME}
+            state["account"] = _account(self.uid)
             # Метка для заголовка X-CSRF: без неё страница не сможет ничего
             # отправить. Отдаём только своей странице - чужую отсеял _ours().
             state["csrf"] = csrf_for(self.sid)
@@ -962,6 +987,19 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/auth/login":
             self._login(payload)
+            return
+        if path == "/auth/code":
+            self._login_by_code(payload)
+            return
+        if path == "/auth/new":
+            self._create()
+            return
+        if path == "/account/code":
+            # Прежний код гаснет: показать его ещё раз нельзя, у нас только хэш
+            self._json({"ok": True, "code": ACCOUNTS.issue_code(self.uid)})
+            return
+        if path == "/account/telegram":
+            self._telegram_link()
             return
         if path == "/auth/logout":
             ACCOUNTS.close_session(self.sid)
@@ -1069,6 +1107,52 @@ class Handler(BaseHTTPRequestHandler):
         sid = ACCOUNTS.open_session(uid)
         self._send_json({"ok": True}, extra={"Set-Cookie": _cookie(sid)})
 
+    def _login_by_code(self, payload: dict) -> None:
+        """
+        Вход по личному коду. Ответ на неверный код один и тот же, есть такой
+        код или нет: иначе по ответам можно было бы искать живые коды.
+        """
+        if not CODE_LIMIT.allow(self._client_ip()) or not CODE_TOTAL.allow(CODE_EVERYONE):
+            self._fail(429, "Слишком много попыток входа. Подождите минуту.", retry=60)
+            return
+        uid = ACCOUNTS.redeem_code(payload.get("code"))
+        if uid is None:
+            self._fail(401, "Код не подошёл. Проверьте, что он переписан без ошибок.")
+            return
+        sid = ACCOUNTS.open_session(uid)
+        self._send_json({"ok": True}, extra={"Set-Cookie": _cookie(sid)})
+
+    def _create(self) -> None:
+        """
+        «Начать без Telegram»: новый человек, его личный код и сразу сессия.
+        Код отдаём один раз, в этом ответе, - у нас остаётся только хэш.
+        Согласия ещё нет: страница покажет код, а потом экран согласия.
+        """
+        if not CREATE_LIMIT.allow(self._client_ip()):
+            self._fail(429, "С этого адреса уже заводили несколько дневников. "
+                            "Попробуйте через час.", retry=3600)
+            return
+        uid = ACCOUNTS.create()
+        code = ACCOUNTS.issue_code(uid)
+        sid = ACCOUNTS.open_session(uid)
+        self._send_json({"ok": True, "code": code}, extra={"Set-Cookie": _cookie(sid)})
+
+    def _telegram_link(self) -> None:
+        """Одноразовая ссылка на бота, которая привяжет Telegram к этому дневнику."""
+        if SERVICE_BOT is None:
+            self._fail(404, "Telegram у этого сервиса не подключён.")
+            return
+        if not BOT_NAME:
+            # Бот есть, но имя его при запуске не узнали: ссылку не собрать
+            self._fail(503, "Бот сейчас недоступен. Попробуйте позже.", retry=60)
+            return
+        user = ACCOUNTS.user(self.uid) or {}
+        if user.get("tg_id") is not None:
+            self._fail(409, "Telegram уже подключён.")
+            return
+        token = ACCOUNTS.issue_link(self.uid)
+        self._json({"ok": True, "link": f"https://t.me/{BOT_NAME}?start={token}"})
+
     def _admit(self, csrf: bool = False) -> bool:
         """
         Пустить запрос к дневнику. В режиме local пускаем всех: дневник один и
@@ -1081,7 +1165,7 @@ class Handler(BaseHTTPRequestHandler):
         uid = ACCOUNTS.session_user(sid) if sid else None
         if uid is None:
             self._drain()
-            self._fail(401, "Нужно войти: напишите боту /start или /login.")
+            self._fail(401, need_login())
             return False
         if csrf and not hmac.compare_digest(self.headers.get("X-CSRF") or "",
                                             csrf_for(sid)):
@@ -1442,6 +1526,16 @@ def privacy() -> bytes:
                 .encode("utf-8"))
 
 
+def _account(user_id: int) -> dict:
+    """Что странице знать про человека: имя в Telegram, подключён ли он, есть ли код."""
+    user = ACCOUNTS.user(user_id) or {}
+    return {"username": user.get("username", ""), "bot": BOT_NAME,
+            "telegram": user.get("tg_id") is not None,
+            "has_code": bool(user.get("has_code")),
+            # Есть ли у сервиса бот вообще: без него кнопки про Telegram не нужны
+            "bot_on": SERVICE_BOT is not None}
+
+
 def _erase(user_id: int) -> None:
     """
     Удалить человека целиком. Через бота, если он есть: у бота в памяти ещё
@@ -1500,9 +1594,13 @@ def _check_server_settings() -> None:
     if ACCOUNTS is None:
         raise SystemExit(f"MIRA_MODE=server: база {DB_FILE} недоступна, "
                          "проверьте MIRA_DB и права на каталог")
-    if not token_is_shaped_right(os.environ.get("TELEGRAM_TOKEN", "")):
-        raise SystemExit("MIRA_MODE=server: задайте TELEGRAM_TOKEN - токен бота сервиса "
-                         "от @BotFather. Без бота в сервис нельзя войти.")
+    # Бот необязателен: без токена сервис работает только через сайт. Но
+    # токен, заданный с ошибкой, - это опечатка, а не решение обойтись без
+    # бота: молча работать без него значит потерять всех, кто пишет боту.
+    token = os.environ.get("TELEGRAM_TOKEN", "").strip()
+    if token and not token_is_shaped_right(token):
+        raise SystemExit("MIRA_MODE=server: TELEGRAM_TOKEN не похож на токен от @BotFather. "
+                         "Без бота оставьте переменную пустой.")
 
 
 def _start_service_bot() -> None:
@@ -1563,7 +1661,10 @@ def main() -> None:
         # До бота и до первого запроса: VACUUM держит базу целиком.
         if STORE.storage.scrub_once():
             print("База переписана: удалённое раньше затёрто")
-        _start_service_bot()
+        if os.environ.get("TELEGRAM_TOKEN", "").strip():
+            _start_service_bot()
+        else:
+            print("TELEGRAM_TOKEN не задан: работаю без бота, вход только через сайт")
         threading.Thread(target=_sweeping, args=(STOP,), daemon=True).start()
         print(f"Мира в режиме server: https://{PUBLIC_HOST}, слушаю {HOST}:{PORT}")
     else:

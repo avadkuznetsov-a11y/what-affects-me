@@ -10,7 +10,9 @@
 
 Режим server (MIRA_MODE=server) - бот сервиса для многих людей. Кода привязки
 там нет: человек пишет /start, бот заводит его по номеру в Telegram и
-присылает одноразовую ссылку на страницу. Пока человек не дал согласие на
+присылает одноразовую ссылку на страницу. Кто начал дневник на сайте, приходит
+по ссылке со страницы: /start <токен> привязывает его чат к уже заведённому
+дневнику, а не заводит новый. Пока человек не дал согласие на
 обработку данных о здоровье, бот ничего не записывает. Этот режим включается
 тем, что боту передан учёт людей (`accounts`); запускает его web/server.py.
 
@@ -349,7 +351,7 @@ class TelegramBot:
             refusal = self._gate(message)
             if refusal is not None:
                 return refusal
-            refusal = limits.may_parse(message["chat"]["id"])
+            refusal = limits.may_parse(self.accounts.by_telegram(message["chat"]["id"]))
             if refusal:
                 return refusal
         voice = message.get("voice") or message.get("audio") or {}
@@ -373,16 +375,21 @@ class TelegramBot:
     # ── режим server ──────────────────────────────────────────────────────
     def _serve(self, message: dict) -> str:
         """
-        Сообщение в боте сервиса. Человек - это номер отправителя в Telegram,
-        дневник у каждого свой (`u:<номер>`), кодов привязки нет.
+        Сообщение в боте сервиса. Человек - тот, к кому привязан номер
+        отправителя в Telegram (`Accounts.by_telegram`); дневник у каждого
+        свой (`u:<user_id>`), кодов привязки нет.
         """
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip()
-        command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
+        words = text.split()
+        command = words[0].split("@", 1)[0].lower() if words else ""
 
         if not self._private(message):
             return ""
 
+        if command == "/start" and len(words) > 1:
+            # Ссылка «Подключить Telegram» со страницы: t.me/<бот>?start=<токен>
+            return self._link(message, words[1])
         if command in ("/start", "/login"):
             return self._welcome(message, first=command == "/start")
         if command in ("/help", "/помощь"):
@@ -390,7 +397,8 @@ class TelegramBot:
 
         # Удалить свои данные можно и без согласия: оно нужно, чтобы записывать,
         # а не чтобы уйти.
-        if self.accounts.user(chat_id) is None:
+        user_id = self.accounts.by_telegram(chat_id)
+        if user_id is None:
             return "Напишите /start - так я заведу ваш дневник."
         if command == "/delete":
             self._erasing[chat_id] = time.time()
@@ -400,7 +408,7 @@ class TelegramBot:
         asked = self._erasing.pop(chat_id, None)
         if asked is not None and time.time() - asked <= ERASE_WAIT and text == ERASE_WORD:
             try:
-                self.erase(chat_id)
+                self.erase(user_id)
             except Exception as exc:
                 # Удаление идёт одной транзакцией: упало - не удалено ничего
                 print(f"Удаление не прошло: {trace(exc)}")
@@ -423,7 +431,7 @@ class TelegramBot:
         if not text:
             return "Пока понимаю только текст и голосовые. Напишите пару фраз о дне."
         # Потолок разбора общий со страницей: человек один, бюджет на модель один
-        refusal = "" if message.get(VOICE_COUNTED) else limits.may_parse(chat_id)
+        refusal = "" if message.get(VOICE_COUNTED) else limits.may_parse(user_id)
         if refusal:
             return refusal
 
@@ -445,9 +453,9 @@ class TelegramBot:
 
     def _welcome(self, message: dict, first: bool) -> Reply:
         """Завести человека, привязать чат и прислать одноразовую ссылку входа."""
-        user_id = message["chat"]["id"]
-        self.accounts.enroll(user_id, (message.get("from") or {}).get("username", ""))
-        self.store.attach(user_id, user_key(user_id))
+        chat_id = message["chat"]["id"]
+        user_id = self.accounts.enroll(chat_id, (message.get("from") or {}).get("username", ""))
+        self.store.attach(chat_id, user_key(user_id))
         link = f"{self.public_url}/login#t={self.accounts.issue_login(user_id)}"
         if first:
             text = SERVICE_HELLO.format(link=link)
@@ -461,10 +469,38 @@ class TelegramBot:
             text += "\n\n" + CONSENT_ASK.format(privacy=f"{self.public_url}/privacy")
             options["reply_markup"] = CONSENT_BUTTON
         else:
-            self.reminders.remember(user_id)
+            self.reminders.remember(chat_id)
             if first:
                 text += "\n\nНапишите или наговорите, как прошёл день."
         return Reply(text, **options)
+
+    def _link(self, message: dict, token: str) -> Reply | str:
+        """
+        /start <токен>: человек начал дневник на сайте и нажал там «Подключить
+        Telegram». Привязываем этот чат к его дневнику, нового не заводим.
+        """
+        chat_id = message["chat"]["id"]
+        user_id, problem = self.accounts.link_telegram(
+            token, chat_id, (message.get("from") or {}).get("username", ""))
+        if problem == "taken":
+            return ("Этот Telegram уже ведёт другой дневник Миры, а склеивать два "
+                    "дневника я не умею. Чтобы подключить его к новому, сначала удалите "
+                    f"старый (/delete, потом слово {ERASE_WORD}) и нажмите на странице «Подключить "
+                    "Telegram» ещё раз. Или пользуйтесь старым дневником: /login.")
+        if problem == "has":
+            return "К этому дневнику уже подключён другой Telegram."
+        if user_id is None:
+            return ("Ссылка не сработала: она живёт десять минут и открывается один раз. "
+                    "Нажмите на странице «Подключить Telegram» ещё раз.")
+        self.store.attach(chat_id, user_key(user_id))
+        text = ("Готово: Telegram подключён к вашему дневнику. Пишите сюда, как прошёл "
+                "день, - записи будут видны и на странице.")
+        if not self.accounts.has_consent(user_id):
+            return Reply(text + "\n\n" + CONSENT_ASK.format(privacy=f"{self.public_url}/privacy"),
+                         link_preview_options={"is_disabled": True},
+                         reply_markup=CONSENT_BUTTON)
+        self.reminders.remember(chat_id)
+        return text
 
     def _gate(self, message: dict) -> str | None:
         """
@@ -473,8 +509,9 @@ class TelegramBot:
         """
         if not self._private(message):
             return ""
-        user_id = message["chat"]["id"]
-        if self.accounts.user(user_id) is None:
+        chat_id = message["chat"]["id"]
+        user_id = self.accounts.by_telegram(chat_id)
+        if user_id is None:
             return "Напишите /start - так я заведу ваш дневник."
         if not self.accounts.has_consent(user_id):
             return Reply("Сначала подтвердите согласие. "
@@ -482,33 +519,40 @@ class TelegramBot:
                          link_preview_options={"is_disabled": True},
                          reply_markup=CONSENT_BUTTON)
         # Напоминаем только тем, кто согласился и сам пишет боту
-        self.reminders.remember(user_id)
+        self.reminders.remember(chat_id)
         return None
 
     def consent(self, query: dict) -> None:
         """Нажата кнопка «Согласен» под сообщением бота."""
-        user_id = (query.get("from") or {}).get("id")
+        chat_id = (query.get("from") or {}).get("id")
         try:
             self._call("answerCallbackQuery", callback_query_id=query.get("id", ""))
         except TelegramError:
             pass        # часики на кнопке погаснут сами, согласие важнее
-        if query.get("data") != "consent" or user_id is None:
+        if query.get("data") != "consent" or chat_id is None:
             return
-        if self.accounts.user(user_id) is None:
-            self.send(user_id, "Напишите /start - так я заведу ваш дневник.")
+        user_id = self.accounts.by_telegram(chat_id)
+        if user_id is None:
+            self.send(chat_id, "Напишите /start - так я заведу ваш дневник.")
             return
         self.accounts.agree(user_id)
-        self.reminders.remember(user_id)
-        self.send(user_id, "Спасибо. Теперь пишите или наговаривайте, как прошёл день.")
+        self.reminders.remember(chat_id)
+        self.send(chat_id, "Спасибо. Теперь пишите или наговаривайте, как прошёл день.")
 
     def erase(self, user_id: int) -> None:
         """
         Удалить человека целиком: дневник, привязку чата, напоминания, сессии
         и учётную запись. То же самое делает кнопка «Удалить всё» на странице.
+
+        user_id - номер человека в сервисе; расписание и просьба об удалении
+        ведутся по чату, то есть по номеру в Telegram, его узнаём до удаления.
         """
+        user = self.accounts.user(user_id)
+        chat_id = user["tg_id"] if user else None
         self.accounts.erase(user_id, self.store)
-        self.reminders.forget(user_id)
-        self._erasing.pop(user_id, None)
+        if chat_id is not None:
+            self.reminders.forget(chat_id)
+            self._erasing.pop(chat_id, None)
 
     def _diary_of(self, chat_id: int):
         """
@@ -516,7 +560,11 @@ class TelegramBot:
         гостевых дневников tg:* там не бывает.
         """
         if self.service:
-            return self.store.get(user_key(chat_id))
+            user_id = self.accounts.by_telegram(chat_id)
+            # Человека нет (удалили, пока чат стоял в очереди напоминаний) -
+            # берём ключ по номеру чата, как было до подключения Telegram с
+            # сайта: такой дневник без хозяина сотрёт чистка по сроку.
+            return self.store.get(user_key(chat_id if user_id is None else user_id))
         return self.store.diary_for_chat(chat_id)
 
     def _bind(self, code: str, chat_id: int) -> str:

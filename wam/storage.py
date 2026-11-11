@@ -85,6 +85,13 @@ CREATE TABLE IF NOT EXISTS login_tokens (
     user_id    INTEGER NOT NULL,
     expires_at REAL NOT NULL
 );
+-- Одноразовые ссылки «подключить Telegram» со страницы. Отдельно от
+-- login_tokens: токен привязки не должен открывать страницу, и наоборот.
+CREATE TABLE IF NOT EXISTS link_tokens (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL,
+    expires_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS reminders (
     chat_id INTEGER PRIMARY KEY,
     at      INTEGER,
@@ -103,7 +110,17 @@ CREATE TABLE IF NOT EXISTS meta (
 # Колонки, появившиеся после того, как таблица уже могла быть заведена.
 # CREATE IF NOT EXISTS старую таблицу не трогает, поэтому досоздаём их сами.
 # Только добавляем: откат на прежний код такую базу читает как раньше.
-_LATER_COLUMNS = (("users", "active_at", "REAL"),)
+_LATER_COLUMNS = (
+    ("users", "active_at", "REAL"),
+    # Номер в Telegram. Раньше человек и был своим номером (user_id), теперь
+    # можно завести дневник на сайте, а Telegram подключить потом или никогда.
+    ("users", "tg_id", "INTEGER"),
+    # Личный код для входа без Telegram (wam.accounts): только соль и хэш,
+    # плюс короткий отпечаток для поиска - сам код не хранится нигде.
+    ("users", "code_index", "TEXT"),
+    ("users", "code_salt", "TEXT"),
+    ("users", "code_hash", "TEXT"),
+)
 
 
 def _add_missing_columns(db: sqlite3.Connection) -> None:
@@ -111,6 +128,14 @@ def _add_missing_columns(db: sqlite3.Connection) -> None:
         have = {row[1] for row in db.execute(f"PRAGMA table_info({table})")}
         if column not in have:
             db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
+    # Люди, заведённые ботом до появления tg_id: их номер в Telegram - это и
+    # есть user_id. Делаем на каждом запуске, а не один раз при добавлении
+    # колонки: после отката на прежний код и обратно бот успел бы завести
+    # людей без tg_id. Номера людей в Telegram всегда положительные; у тех,
+    # кто завёл дневник на сайте, user_id отрицательный (см. Accounts.create).
+    db.execute("UPDATE users SET tg_id=user_id WHERE tg_id IS NULL AND user_id>0")
+    db.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_tg ON users(tg_id)")
+    db.execute("CREATE INDEX IF NOT EXISTS users_code ON users(code_index)")
     db.commit()
 
 

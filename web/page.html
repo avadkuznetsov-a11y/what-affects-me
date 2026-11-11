@@ -103,7 +103,7 @@
  .body{padding:14px 16px;display:flex;flex-direction:column;gap:12px}
  .hint{margin:0;font-size:13px;line-height:1.5;color:var(--soft)}
  .row{display:flex;gap:8px;flex-wrap:wrap}
- .panel input[type=text],.panel input[type=password]{width:100%;padding:10px 12px;font:inherit;
+ .panel input[type=text],.panel input[type=password],.gate input[type=text]{width:100%;padding:10px 12px;font:inherit;
   color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px}
  .ok{margin:0;font-size:14px}
  .ok b{font-weight:500}
@@ -278,11 +278,30 @@
   <section class="block" id="gate-login">
     <div class="head"><h2>Вход в дневник</h2></div>
     <div class="body">
-      <p>Дневник открывается по ссылке от бота Миры в Telegram.</p>
-      <p class="hint" id="gate-how">Напишите боту команду /start - он пришлёт ссылку для входа.
-        Ссылка действует десять минут и открывается один раз. Чтобы войти снова,
-        напишите боту /login.</p>
+      <p>Вести дневник можно прямо здесь, на сайте. Telegram не нужен.</p>
+      <div class="row"><button class="small" id="new-btn" onclick="startNew()">Начать без Telegram</button></div>
+      <p class="hint">У меня есть код - тот, что выдали при создании дневника:</p>
+      <div class="row"><input id="code-field" type="text" autocomplete="off"
+             autocapitalize="characters" spellcheck="false" placeholder="XXXX-XXXX-XXXX-XXXX"></div>
+      <div class="row"><button class="small ghost" onclick="enterCode()">Войти по коду</button></div>
+      <!-- Только если у сервиса есть бот (TELEGRAM_TOKEN задан) -->
+      <p class="hint" id="gate-how" hidden>Ещё можно войти через Telegram: напишите боту
+        Миры команду /start - он пришлёт ссылку для входа. Ссылка действует десять минут и
+        открывается один раз. Чтобы войти снова, напишите боту /login.</p>
       <p class="warn" id="gate-error" hidden></p>
+    </div>
+  </section>
+
+  <!-- Сразу после «Начать без Telegram»: код показываем один раз, у сервера
+       остаётся только его хэш. -->
+  <section class="block" id="gate-code" hidden>
+    <div class="head"><h2>Ваш личный код</h2></div>
+    <div class="body">
+      <p>По этому коду дневник открывается с другого устройства или после выхода.</p>
+      <div class="code" id="gate-code-value"></div>
+      <p>Потеряете код и выйдете - дневник не вернуть. Сохраните его: запишите или
+        положите в менеджер паролей.</p>
+      <div class="row"><button class="small" onclick="codeSaved()">Я сохранил код</button></div>
     </div>
   </section>
 
@@ -292,8 +311,7 @@
       <p>Мира записывает то, что вы рассказываете про сон, самочувствие и привычки.
         Это данные о здоровье, и без вашего согласия мы их не обрабатываем.</p>
       <p class="hint">Что храним, кто ещё их видит, сколько храним и как всё удалить -
-        <a href="/privacy" target="_blank" rel="noopener">в политике</a>. Сообщения боту
-        идут через Telegram.</p>
+        <a href="/privacy" target="_blank" rel="noopener">в политике</a>.</p>
       <label class="agree"><input type="checkbox" id="agree"
         onchange="document.getElementById('agree-btn').disabled = !this.checked">
         Я прочитал политику и согласен на обработку моих данных, включая данные о здоровье</label>
@@ -423,7 +441,21 @@
     <section class="block" data-panel="telegram" id="account" hidden>
       <div class="head"><h2>Мои данные</h2></div>
       <div class="body">
-        <p class="ok">Telegram подключён<span id="account-name"></span></p>
+        <p class="ok" id="account-tg" hidden>Telegram подключён<span id="account-name"></span></p>
+        <!-- Только у того, кто начал на сайте, и только если у сервиса есть бот -->
+        <div class="stack" id="tg-link-box" hidden>
+          <div class="row"><button class="small ghost" onclick="linkTelegram()">Подключить Telegram</button></div>
+          <p class="hint" id="tg-link-note" hidden>Откройте ссылку и нажмите в боте «Запустить»:
+            <a id="tg-link" href="#" target="_blank" rel="noopener">открыть бота</a>.
+            Ссылка действует десять минут и срабатывает один раз.</p>
+        </div>
+        <div class="stack">
+          <div class="row"><button class="small ghost" id="code-btn" onclick="personalCode()">Показать код</button></div>
+          <p class="hint" id="code-about">Личный код открывает дневник на другом устройстве.</p>
+          <div class="code" id="code-value" hidden></div>
+          <p class="hint" id="code-warn" hidden>Сохраните его. Потеряете код и выйдете - дневник
+            не вернуть.</p>
+        </div>
         <div class="row">
           <button class="small ghost" onclick="save('text')">Скачать дневник</button>
           <button class="small ghost" onclick="save('csv')">Таблицей для Excel</button>
@@ -734,7 +766,7 @@ async function talk(path, body){
   const r = await fetch(path, options);
   let answer = {};
   try { answer = await r.json(); } catch(e) { answer = {}; }
-  if(r.status === 401 && path !== '/auth/login') showGate();
+  if(r.status === 401 && !path.startsWith('/auth/')) showGate();
   if(!r.ok) throw new Error(answer.error || 'программа ответила ошибкой ' + r.status);
   return answer;
 }
@@ -742,17 +774,26 @@ async function talk(path, body){
 // ── вход (режим server) ───────────────────────────────────────────────────
 const BOT = '__BOT__';
 
+// Есть ли у сервиса бот. Нет - про Telegram на странице ни слова.
+const TG = '__TG__' === '1';
+
+// Пока на экране только что выданный код, опрос состояния экран не трогает:
+// иначе через две секунды его сменило бы согласие, и код ушёл бы с экрана
+// раньше, чем человек его записал.
+let codeShown = false;
+
 function showGate(error, which){
-  const consent = which === 'consent';
-  document.getElementById('gate-login').hidden = consent;
-  document.getElementById('gate-consent').hidden = !consent;
+  which = which || 'login';
+  for(const name of ['login', 'consent', 'code'])
+    document.getElementById('gate-' + name).hidden = name !== which;
   document.getElementById('gate').hidden = false;
   document.getElementById('grid').hidden = true;
   document.querySelector('.tabs').hidden = true;
-  if(BOT){
-    const how = document.getElementById('gate-how');
+  const how = document.getElementById('gate-how');
+  how.hidden = !TG;
+  if(TG && BOT){
     how.textContent = '';
-    how.append('Напишите ');
+    how.append('Ещё можно войти через Telegram: напишите ');
     const link = document.createElement('a');
     link.href = 'https://t.me/' + encodeURIComponent(BOT);
     link.textContent = '@' + BOT;
@@ -761,6 +802,42 @@ function showGate(error, which){
   }
   const box = document.getElementById('gate-error');
   if(error !== undefined){ box.textContent = error; box.hidden = !error; }
+}
+
+async function startNew(){
+  const button = document.getElementById('new-btn');
+  button.disabled = true;
+  try {
+    const answer = await talk('/auth/new', {});
+    document.getElementById('gate-code-value').textContent = answer.code;
+    codeShown = true;
+    showGate('', 'code');
+  } catch(e) {
+    showGate(e.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function codeSaved(){
+  codeShown = false;
+  document.getElementById('gate-code-value').textContent = '';
+  poll();
+}
+
+async function enterCode(){
+  const field = document.getElementById('code-field');
+  const code = field.value.trim();
+  if(!code){ showGate('Введите код.'); return; }
+  try {
+    await talk('/auth/code', {code});
+  } catch(e) {
+    showGate(e.message);
+    return;
+  }
+  field.value = '';
+  document.getElementById('gate-error').hidden = true;
+  poll();
 }
 
 function hideGate(){
@@ -1020,10 +1097,16 @@ function drawAccount(state){
   csrf = state.csrf || '';
   if(state.consent_needed){ showGate(undefined, 'consent'); return false; }
   hideGate();
-  const name = (state.account || {}).username;
+  const account = state.account || {};
+  const name = account.username;
   document.getElementById('account-name').textContent = name ? ': @' + name : '';
+  document.getElementById('account-tg').hidden = !account.telegram;
+  document.getElementById('tg-link-box').hidden = account.telegram || !account.bot_on;
+  hasCode = !!account.has_code;
+  document.getElementById('code-btn').textContent = hasCode ? 'Сменить код' : 'Показать код';
   const who = document.getElementById('whoami');
-  who.textContent = name ? 'Вы вошли как @' + name : 'Вы вошли через Telegram';
+  who.textContent = name ? 'Вы вошли как @' + name
+    : account.telegram ? 'Вы вошли через Telegram' : 'Вы вошли по личному коду';
   who.hidden = false;
   if(!serverDrawn){
     serverDrawn = true;
@@ -1057,6 +1140,46 @@ async function agree(){
   poll();
 }
 
+// Код у сервера хранится только хэшем, поэтому прежний показать нельзя:
+// кнопка всегда выдаёт новый, а старый при этом перестаёт работать.
+let hasCode = false;
+
+async function personalCode(){
+  const box = document.getElementById('account-error');
+  if(hasCode && !confirm('Прежний код перестанет работать, вместо него будет новый. Продолжить?'))
+    return;
+  let answer;
+  try {
+    answer = await talk('/account/code', {});
+  } catch(e) {
+    box.textContent = 'Код не выдался: ' + e.message;
+    box.hidden = false;
+    return;
+  }
+  box.hidden = true;
+  const value = document.getElementById('code-value');
+  value.textContent = answer.code;
+  value.hidden = false;
+  document.getElementById('code-warn').hidden = false;
+  hasCode = true;
+  document.getElementById('code-btn').textContent = 'Сменить код';
+}
+
+async function linkTelegram(){
+  const box = document.getElementById('account-error');
+  let answer;
+  try {
+    answer = await talk('/account/telegram', {});
+  } catch(e) {
+    box.textContent = 'Ссылка не выдалась: ' + e.message;
+    box.hidden = false;
+    return;
+  }
+  box.hidden = true;
+  document.getElementById('tg-link').href = answer.link;
+  document.getElementById('tg-link-note').hidden = false;
+}
+
 // everywhere - закрыть все сессии человека: забытый вход на чужом компьютере
 // иначе живёт ещё месяц.
 async function logout(everywhere){
@@ -1083,13 +1206,13 @@ async function eraseAll(){
   csrf = '';
   document.getElementById('feed').innerHTML = '';
   lastSeq = 0;
-  showGate('Всё удалено. Чтобы начать заново, напишите боту /start.');
+  showGate('Всё удалено. Начать заново можно здесь же.');
 }
 
 // Опрос раз в две секунды и только когда вкладка открыта: держать соединение
 // в свёрнутом браузере незачем.
 async function poll(){
-  if(document.hidden) return;
+  if(document.hidden || codeShown) return;
   try {
     const r = await fetch('/state?since=' + lastSeq);
     if(r.status === 401){ showGate(); return; }
