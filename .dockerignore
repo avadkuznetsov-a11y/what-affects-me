@@ -1,0 +1,14 @@
+# В образ - только код (wam, bot, demo, web). Дневники, ключи и всё, что
+# нужно только при разработке, внутрь не попадает.
+.diary.db*
+.env*
+data
+tests
+docs
+tools
+.git
+.claude
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.venv

@@ -1,0 +1,52 @@
+# Мира на сервере за nginx-proxy + acme-companion. Как выкладывать - README,
+# раздел «Выкладка на сервер».
+services:
+  mira:
+    build: .
+    container_name: mira
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      MIRA_MODE: server
+      MIRA_DB: /app/data/mira.db
+      MIRA_PUBLIC_HOST: mira.ambarik.ru
+      VIRTUAL_HOST: mira.ambarik.ru
+      VIRTUAL_PORT: "8765"
+      LETSENCRYPT_HOST: mira.ambarik.ru
+      LETSENCRYPT_EMAIL: ${LETSENCRYPT_EMAIL:?задайте LETSENCRYPT_EMAIL в .env}
+    # Наружу порт не публикуем: снаружи сервис видит только nginx-proxy через
+    # общую сеть. ports здесь открыл бы его мимо TLS и проверки хоста.
+    expose:
+      - "8765"
+    networks:
+      - webnet
+    # Перед первым запуском: mkdir -p data && chown 10001:10001 data && chmod 700 data
+    volumes:
+      - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 384m
+    # По SIGTERM сервис перестаёт принимать запросы, ждёт сообщение, которое
+    # бот уже обрабатывает (до 10 с), и закрывает базу - см. stop_service().
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).read() == b'ok' else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  webnet:
+    name: samozanyatiy_bot_webnet
+    external: true

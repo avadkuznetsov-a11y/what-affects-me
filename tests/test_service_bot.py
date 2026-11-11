@@ -327,3 +327,72 @@ def test_bot_shares_the_daily_parse_limit(world, monkeypatch):
     _say(bot, "Ходил в зал")
     assert "завтра" in api.sent(101)[-1]["text"]
     assert store.get(user_key(101)).today().factor("тренировка") is None
+
+
+# ── остановка процесса ────────────────────────────────────────────────────
+
+def test_halt_confirms_what_was_done(world):
+    """
+    Обработанные апдейты Telegram считает полученными только со следующим
+    getUpdates. При остановке его делает halt(), иначе после перезапуска бот
+    ответил бы на ту же пачку второй раз.
+    """
+    bot, _, _, api = world
+    api.updates = [_update("/start", update_id=7)]
+    stop = threading.Event()
+
+    def call(method, **params):
+        answer = api(method, **params)
+        if method == "getUpdates" and len([c for c in api.calls if c[0] == "getUpdates"]) > 1:
+            stop.set()
+        return answer
+
+    bot._call = call
+    bot.run(stop=stop)
+    api.calls.clear()
+    bot._call = api
+    bot.halt(stop)
+    assert api.calls == [("getUpdates", {"offset": 8, "timeout": 0})]
+
+
+def test_stopped_mid_batch_leaves_the_rest_to_telegram(world):
+    """Остановили посреди пачки - остаток не обрабатываем и не подтверждаем."""
+    bot, _, _, api = world
+    stop = threading.Event()
+    api.updates = [_update("/start", update_id=1), _update("/start", user_id=102, update_id=2)]
+    handled = []
+
+    def process(update):
+        handled.append(update["update_id"])
+        stop.set()                       # SIGTERM пришёл, пока шёл первый
+
+    bot.process = process
+    bot.run(stop=stop)
+    assert handled == [1]
+    bot.halt(stop)
+    assert api.calls[-1] == ("getUpdates", {"offset": 2, "timeout": 0})
+
+
+def test_halt_waits_for_the_message_in_work(world):
+    bot, _, _, api = world
+    started, release = threading.Event(), threading.Event()
+    stop = threading.Event()
+    api.updates = [_update("/start", update_id=3)]
+
+    def process(update):
+        started.set()
+        release.wait(5)
+
+    bot.process = process
+    worker = threading.Thread(target=bot.run, kwargs={"stop": stop})
+    worker.start()
+    assert started.wait(5)
+    halter = threading.Thread(target=bot.halt, args=(stop,))
+    halter.start()
+    halter.join(0.3)
+    assert halter.is_alive()             # ждёт, пока сообщение не доделано
+    release.set()
+    halter.join(5)
+    worker.join(5)
+    assert not halter.is_alive() and not worker.is_alive()
+    assert ("getUpdates", {"offset": 4, "timeout": 0}) in api.calls

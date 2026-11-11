@@ -15,11 +15,15 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import hmac
 import html
 import ipaddress
 import json
 import os
+import re
+import signal
 import threading
 import time
 from datetime import date, timedelta
@@ -162,7 +166,16 @@ def page() -> bytes:
                 .replace("__PERIODS__", periods)
                 .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS))
                 .replace("__BOT__", BOT_NAME))
+    if MODE == "server":
+        # Шрифты Google на сервисе не грузим: запрос к чужому домену отдаёт
+        # Google адрес каждого, кто открыл дневник, и CSP его всё равно не
+        # пустит (default-src 'self'). У шрифтов в странице есть запасной
+        # стек, без них она выглядит так же, только системным шрифтом.
+        html = GOOGLE_FONTS.sub("", html)
     return html.encode("utf-8")
+
+
+GOOGLE_FONTS = re.compile(r'<link\b[^>]*https://fonts\.(?:googleapis|gstatic)\.com[^>]*>\s*')
 
 
 # ── состояние разговора ───────────────────────────────────────────────────
@@ -652,7 +665,7 @@ def _short_basis(link) -> str:
 
 # Без входа в режиме server открыто только это: сама страница (она и есть
 # экран входа) и обмен ссылки от бота на сессию. Всё остальное - 401.
-OPEN_GET = ("/", "/login", "/privacy")
+OPEN_GET = ("/", "/login", "/privacy", "/healthz")
 OPEN_POST = ("/auth/login",)
 
 # Что можно без согласия: увидеть экран согласия, согласиться, выйти и
@@ -680,6 +693,59 @@ try:
 except ValueError:
     raise SystemExit("MIRA_RETENTION_DAYS: ожидается число дней") from None
 
+# Заголовки каждого ответа в режиме server. no-store - на всё: почти каждый
+# ответ несёт чужой дневник, сессию или метку CSRF, а страница весит десятки
+# килобайт и от кэша ничего не выигрывает. Общий компьютер или прокси не
+# должны сохранять у себя ни строчки. HSTS ставит и nginx-proxy, но сервис
+# не должен зависеть от того, как настроен прокси перед ним.
+SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Strict-Transport-Security": "max-age=31536000",
+    "Cache-Control": "no-store",
+}
+
+# CSP для всего, кроме наших html-страниц: только свой адрес, без плагинов,
+# без встраивания в чужие рамки, без подмены <base> и отправки форм наружу.
+BASE_POLICY = ("default-src 'self'; base-uri 'none'; object-src 'none'; "
+               "frame-ancestors 'none'; form-action 'self'")
+
+_SCRIPT = re.compile(r"<script>(.*?)</script>", re.S)
+_STYLE = re.compile(r"<style>(.*?)</style>", re.S)
+_HANDLER = re.compile(r'\son[a-z]+="([^"]*)"')
+
+
+def _sha(text: str) -> str:
+    digest = hashlib.sha256(text.encode("utf-8")).digest()
+    return "'sha256-" + base64.b64encode(digest).decode("ascii") + "'"
+
+
+def page_policy(body: bytes) -> str:
+    """
+    CSP для html-страницы, посчитанная по её же тексту.
+
+    Скрипт и стили у страницы встроены (<script> и <style> внутри html), а
+    кнопки вызывают функции через onclick="...". 'unsafe-inline' разрешил бы
+    это одной строкой, но вместе с этим и любой скрипт, который удастся
+    подсунуть через innerHTML ленты. Поэтому разрешаем ровно наши куски по
+    sha256: блок <script>, блок <style> и тексты обработчиков onclick и
+    подобных. Для обработчиков CSP требует ещё 'unsafe-hashes' - оно пускает
+    только обработчики с теми же хэшами, то есть те, что уже есть в разметке.
+
+    Считаем на каждый ответ, а не один раз: в скрипт страницы подставляется
+    имя бота, а оно становится известно после запуска.
+    """
+    text = body.decode("utf-8")
+    scripts = sorted({_sha(block) for block in _SCRIPT.findall(text)})
+    handlers = sorted({_sha(html.unescape(code)) for code in _HANDLER.findall(text)})
+    styles = sorted({_sha(block) for block in _STYLE.findall(text)})
+    script_src = " ".join(["'self'"] + scripts
+                          + (["'unsafe-hashes'"] + handlers if handlers else []))
+    style_src = " ".join(["'self'"] + styles)
+    return f"{BASE_POLICY}; script-src {script_src}; style-src {style_src}"
+
+
 POST_PATHS = ("/say", "/summary", "/reset", "/city", "/weather", "/food")
 LOCAL_POST = ("/telegram/connect", "/telegram/disconnect",
               "/telegram/code", "/telegram/unlink")
@@ -691,12 +757,22 @@ class Handler(BaseHTTPRequestHandler):
     # _user_key() отказывается называть дневник.
     uid: int | None = None
     sid: str = ""
+    # CSP этого ответа: у html-страницы своя, с хэшами её скриптов; у
+    # остального - BASE_POLICY. Ставит _send(), отправляет end_headers().
+    policy: str = ""
 
     def do_GET(self):
         self.uid, self.sid = None, ""
+        path = urlparse(self.path).path
+        if path == "/healthz":
+            # Проверка живости для docker. Стоит до _ours(): docker стучится
+            # изнутри контейнера на 127.0.0.1, а не на MIRA_PUBLIC_HOST, и
+            # проверку хоста не прошёл бы. Ничего не читает и ничего не отдаёт,
+            # кроме «ok», - поэтому открыт и без входа, и снаружи.
+            self._send(b"ok", "text/plain; charset=utf-8")
+            return
         if not self._ours():
             return
-        path = urlparse(self.path).path
         if path == "/" or (MODE == "server" and path == "/login"):
             # Перезагрузка страницы разговор не сбрасывает: для этого есть
             # кнопка «Начать заново». /login - та же страница: её скрипт
@@ -1096,6 +1172,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, body: bytes, content_type: str, code: int = 200,
               extra: dict[str, str] | None = None):
+        self.policy = (page_policy(body) if MODE == "server"
+                       and content_type.startswith("text/html") else "")
         self.send_response(code)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -1106,6 +1184,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
+
+    def end_headers(self):
+        # Здесь, а не в _send: через end_headers идут и ответы send_error
+        # (404, 400 на кривой запрос), им заголовки нужны так же.
+        if MODE == "server":
+            for name, value in SECURITY_HEADERS.items():
+                self.send_header(name, value)
+            self.send_header("Content-Security-Policy", self.policy or BASE_POLICY)
+        super().end_headers()
 
 
 LOCAL_HOSTS = ("127.0.0.1", "localhost", "::1")
@@ -1301,7 +1388,33 @@ def _start_service_bot() -> None:
         # Telegram недоступен при запуске - это не повод не подниматься:
         # опрос будет стучаться сам, а страница просто не назовёт бота.
         print(f"Имя бота не узнал: {SERVICE_BOT._trace(exc)}")
-    threading.Thread(target=SERVICE_BOT.run, daemon=True).start()
+    threading.Thread(target=SERVICE_BOT.run, kwargs={"stop": STOP}, daemon=True).start()
+
+
+# Сигнал остановки для фоновых потоков: опроса бота и чистки по сроку.
+STOP = threading.Event()
+
+
+def stop_service(server: ThreadingHTTPServer | None = None) -> None:
+    """
+    Выключение по SIGTERM (docker stop, docker compose up при выкладке).
+
+    Порядок важен: сначала перестаём принимать запросы, потом отпускаем бота
+    (он дорабатывает сообщение, которое уже в руках, и подтверждает Telegram
+    сделанное), и только потом дописываем дневники и закрываем базу - иначе
+    запись, начатая после закрытия, упала бы.
+
+    Запросы, которые сервер уже принял, не ждём: потоки у ThreadingHTTPServer
+    фоновые, а самый долгий из них - разбор у модели - может не уложиться в
+    stop_grace_period. Их шаги идут транзакциями sqlite, так что оборванный
+    запрос базу не портит, а только не запишет свою реплику.
+    """
+    STOP.set()
+    if server is not None:
+        server.server_close()
+    if SERVICE_BOT is not None:
+        SERVICE_BOT.halt(STOP)
+    STORE.close()
 
 
 def main() -> None:
@@ -1314,7 +1427,7 @@ def main() -> None:
         # заводит хранилище с правами 0600.
         os.chmod(DB_FILE.parent, 0o700)
         _start_service_bot()
-        threading.Thread(target=_sweeping, daemon=True).start()
+        threading.Thread(target=_sweeping, args=(STOP,), daemon=True).start()
         print(f"Мира в режиме server: https://{PUBLIC_HOST}, слушаю {HOST}:{PORT}")
     else:
         # Перенос старого города делаем при запуске программы, а не при
@@ -1322,9 +1435,19 @@ def main() -> None:
         # не должны. В режиме server дневника страницы нет, переносить некуда.
         _move_city_from_file()
         print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")
+
+    def on_term(signum, frame):
+        # serve_forever крутится в этом же потоке, а shutdown() ждёт, пока он
+        # выйдет из цикла: вызванный отсюда напрямую, он ждал бы сам себя.
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    signal.signal(signal.SIGTERM, on_term)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
+        pass
+    finally:
+        stop_service(server)
         print("\nОстановлено")
 
 

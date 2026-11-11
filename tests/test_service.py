@@ -643,3 +643,107 @@ def test_server_mode_allows_only_yandexgpt(monkeypatch):
     monkeypatch.setenv("YANDEX_API_KEY", "key-for-test")
     monkeypatch.setenv("YANDEX_FOLDER_ID", "folder-for-test")
     assert llm.available_engine(only=("YandexGPT",))[0] == "YandexGPT"
+
+
+# ── выкладка: проверка живости, заголовки, остановка ──────────────────────
+
+def test_healthz_is_open_and_says_only_ok(service):
+    """
+    Docker стучится изнутри контейнера на 127.0.0.1 - без нашего Host, без
+    cookie. Ответ - одно слово, никаких данных.
+    """
+    for host in (HOST, "127.0.0.1:8765"):
+        code, headers, body = service.request("GET", "/healthz", headers={"Host": host})
+        assert (code, body) == (200, "ok")
+        assert "Set-Cookie" not in headers
+
+
+def _pages_and_answers(service):
+    """Ответы всех видов: страница, политика, данные, отказы, 404, healthz."""
+    alice = service.person(1)
+    alice.post("/say", {"text": "Пил кофе, с утра тревога"})
+    return {
+        "/": service.request("GET", "/"),
+        "/privacy": service.request("GET", "/privacy"),
+        "/healthz": service.request("GET", "/healthz"),
+        "/state": alice.get("/state"),
+        "/export": alice.get("/export?format=csv"),
+        "/say": alice.post("/say", {"text": "Спал 7 часов"}),
+        "401": service.request("GET", "/state"),
+        "403": service.request("GET", "/", headers={"Host": "evil.test"}),
+        "404": alice.get("/nothing-here"),
+    }
+
+
+def test_every_answer_carries_security_headers(service):
+    for name, (code, headers, _) in _pages_and_answers(service).items():
+        assert headers.get("X-Frame-Options") == "DENY", name
+        assert headers.get("X-Content-Type-Options") == "nosniff", name
+        assert headers.get("Referrer-Policy") == "no-referrer", name
+        assert headers.get("Strict-Transport-Security", "").startswith("max-age="), name
+        # Данные - чужой дневник, сессия, метка CSRF - не оседают ни в кэше
+        # браузера, ни на прокси
+        assert headers.get("Cache-Control") == "no-store", name
+        policy = headers.get("Content-Security-Policy", "")
+        assert "default-src 'self'" in policy and "frame-ancestors 'none'" in policy, name
+
+
+def test_policy_lets_in_only_own_code(service):
+    """
+    Никаких чужих доменов и 'unsafe-inline': встроенные скрипт, стиль и
+    обработчики кнопок разрешены по sha256, ровно те, что в разметке.
+    """
+    for path in ("/", "/privacy"):
+        _, headers, text = service.request("GET", path)
+        policy = headers["Content-Security-Policy"]
+        assert "http" not in policy and "*" not in policy
+        assert "'unsafe-inline'" not in policy and "'unsafe-eval'" not in policy
+        for block in server._SCRIPT.findall(text) + server._STYLE.findall(text):
+            assert server._sha(block) in policy
+        for handler in server._HANDLER.findall(text):
+            assert server._sha(handler) in policy
+    # Страница без шрифтов Google: по CSP их всё равно не пустят, а запрос к
+    # чужому домену отдал бы ему адрес человека
+    page = service.request("GET", "/")[2]
+    assert "fonts.googleapis" not in page and "fonts.gstatic" not in page
+
+
+def test_policy_follows_the_bot_name(service, monkeypatch):
+    """Имя бота подставляется в скрипт страницы - хэш скрипта должен смениться с ним."""
+    before = service.request("GET", "/")[1]["Content-Security-Policy"]
+    monkeypatch.setattr(server, "BOT_NAME", "mira_other_bot")
+    _, headers, text = service.request("GET", "/")
+    assert headers["Content-Security-Policy"] != before
+    [script] = server._SCRIPT.findall(text)
+    assert server._sha(script) in headers["Content-Security-Policy"]
+
+
+def test_local_mode_page_is_as_before(monkeypatch):
+    """В режиме local страница прежняя: шрифты на месте, заголовков сервиса нет."""
+    monkeypatch.setattr(server, "MODE", "local")
+    assert b"fonts.googleapis" in server.page()
+
+
+def test_stop_saves_diaries_and_releases_the_bot(tmp_path, monkeypatch):
+    """
+    SIGTERM: фоновые потоки получают сигнал, бот подтверждает Telegram
+    сделанное, дневник, не дошедший до своего save(), всё равно на диске.
+    """
+    store = DiaryStore(tmp_path / "mira.db")
+    halted = []
+
+    class Bot:
+        def halt(self, stop):
+            halted.append(stop.is_set())
+
+    monkeypatch.setattr(server, "STORE", store)
+    monkeypatch.setattr(server, "SERVICE_BOT", Bot())
+    monkeypatch.setattr(server, "STOP", threading.Event())
+    diary = store.get(user_key(1))
+    # Шаг, который поменял дневник, но до своего save() не дошёл
+    diary.add(dialog.Parser().parse("Пил кофе, с утра тревога", diary.today().day))
+    server.stop_service()
+
+    assert server.STOP.is_set() and halted == [True]
+    again = DiaryStore(tmp_path / "mira.db")
+    assert again.get(user_key(1)).timeline.days

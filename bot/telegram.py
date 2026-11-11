@@ -201,6 +201,10 @@ class TelegramBot:
             self.reminders = Schedule()
         self.limit = Limiter(CHAT_LIMIT, 60)
         self._erasing: dict[int, float] = {}     # чат -> когда попросил удалить всё
+        # Остановка: halt() ждёт, пока отпустят сообщение, которое сейчас в
+        # работе, и подтверждает Telegram всё уже сделанное (см. halt).
+        self._busy = threading.Lock()
+        self._offset = 0
 
     @property
     def service(self) -> bool:
@@ -644,18 +648,49 @@ class TelegramBot:
                 continue
 
             for update in updates.get("result", []):
-                # Сдвигаем offset до обработки: иначе сообщение, на котором мы
-                # спотыкаемся, придёт снова и цикл встанет на нём насовсем.
-                offset = update["update_id"] + 1
-                try:
-                    self.process(update)
-                except KeyboardInterrupt:
-                    print("\nОстановлено")
-                    return
-                except Exception as exc:
-                    # Не смогли даже ответить - остальные сообщения из пачки
-                    # это не должно съедать.
-                    print(f"Ошибка ответа: {self._trace(exc)}")
+                with self._busy:
+                    # Остановили посреди пачки - остаток не трогаем и не
+                    # подтверждаем: Telegram отдаст его после перезапуска.
+                    if stop is not None and stop.is_set():
+                        break
+                    # Сдвигаем offset до обработки: иначе сообщение, на котором мы
+                    # спотыкаемся, придёт снова и цикл встанет на нём насовсем.
+                    offset = update["update_id"] + 1
+                    self._offset = offset
+                    try:
+                        self.process(update)
+                    except KeyboardInterrupt:
+                        print("\nОстановлено")
+                        return
+                    except Exception as exc:
+                        # Не смогли даже ответить - остальные сообщения из пачки
+                        # это не должно съедать.
+                        print(f"Ошибка ответа: {self._trace(exc)}")
+
+    def halt(self, stop: threading.Event, wait: float = 10.0) -> None:
+        """
+        Остановить опрос при выключении процесса (SIGTERM от docker).
+
+        Дождаться конца потока нельзя: он почти всё время висит в getUpdates
+        с ожиданием до timeout секунд, а docker даёт на остановку меньше.
+        Поэтому ждём только сообщение, которое сейчас в работе, - его ответ и
+        запись в дневник не должны оборваться на середине.
+
+        Потом подтверждаем Telegram сделанное. Обработанные апдейты он считает
+        полученными только со следующим getUpdates, а его уже не будет - без
+        этого вызова после перезапуска бот ответил бы на ту же пачку второй
+        раз. Заодно этот вызов обрывает висящий длинный опрос (409 у потока).
+        """
+        stop.set()
+        acquired = self._busy.acquire(timeout=wait)
+        try:
+            if self._offset:
+                self._call("getUpdates", offset=self._offset, timeout=0)
+        except Exception as exc:
+            print(f"Остановка бота: {self._trace(exc)}")
+        finally:
+            if acquired:
+                self._busy.release()
 
     def _trace(self, exc: BaseException) -> str:
         """

@@ -488,6 +488,24 @@ class DiaryStore:
             if self._storage is not None:
                 self._storage.drop_diary(key)
 
+    def close(self) -> None:
+        """
+        Выключение процесса: дописать на диск все дневники и закрыть файл.
+
+        Каждый шаг разговора сохраняется сам, так что обычно писать нечего -
+        это страховка для шага, который успел поменять дневник, но не дошёл
+        до своего save(). Дневник, который не записался, не мешает остальным.
+        """
+        with self._lock:
+            diaries = list(self._diaries.values())
+        for diary in diaries:
+            try:
+                diary.save()
+            except Exception as exc:
+                print(f"Дневник при остановке не записан: {type(exc).__name__}")
+        if self._storage is not None:
+            self._storage.close()
+
     def key_for_chat(self, chat_id: int) -> str:
         """
         Ключ дневника для чата. Непривязанный чат получает свой собственный
