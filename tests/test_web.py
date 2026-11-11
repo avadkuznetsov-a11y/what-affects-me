@@ -662,3 +662,36 @@ def test_state_tells_when_the_model_failed(site, monkeypatch):
     code, body = _fetch(site + "/state")
     assert code == 200
     assert json.loads(body)["model_error"] == "credit balance is too low"
+
+
+def test_insights_show_findings_with_strength_and_plan(site, monkeypatch):
+    """
+    Карточка находки: заголовок «X → Y», метка силы из статистики, план
+    проверки - только у того, что человек решает сам.
+    """
+    links = server.find_links(derive_factors(build(days=120)), permutations=200)
+    monkeypatch.setitem(server._CACHE, 120, (None, links))
+    code, body = _fetch(site + "/insights/example?days=120")
+    assert code == 200
+    answer = json.loads(body)
+    coffee = next(f for f in answer["findings"] if f["title"] == "Кофе → спится хуже")
+    assert coffee["tag"] in ("подтверждено", "вероятная связь")
+    assert coffee["plan"] and "по вашим записям" not in coffee["basis"]
+    assert all(not f["plan"] for f in answer["findings"] if f["title"].startswith("Аврал"))
+    # Отсеянное другими факторами в карточки не идёт, только списком имён
+    assert all("не в этом" not in f["text"] for f in answer["findings"])
+
+
+def test_own_insights_turn_hints_into_guesses(site, monkeypatch):
+    """Связь на горстке дней - «пока догадка», и фраза без уверенного тона."""
+    hint = next(l for l in server.find_links(derive_factors(build(days=21)), permutations=200,
+                                             min_days=3)
+                if abs(l.effect) >= 1 and not l.confounder)
+    hint.p_value = 0.01
+    diary = server.STORE.get(server.WEB_KEY)
+    monkeypatch.setattr(diary, "links", lambda: [])
+    monkeypatch.setattr(diary, "hints", lambda: [hint])
+    answer = json.loads(_fetch(site + "/insights")[1])
+    [guess] = answer["findings"]
+    assert guess["weak"] and guess["tag"] == "пока догадка"
+    assert "дней пока мало" in guess["text"]

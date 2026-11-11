@@ -111,6 +111,44 @@ def say(link: Link) -> str:
     return f"{start} {when} {change}, и {strength}: на {_score(amount)} из 10."
 
 
+def headline(link: Link) -> str:
+    """
+    Заголовок находки на странице: «Кофе → спится хуже». Полная фраза идёт
+    следом, а заголовок нужен, чтобы список находок читался по первым словам.
+    """
+    factor = link.factor[:1].upper() + link.factor[1:]
+    return f"{factor} → {metric_phrase(link.metric, link.effect < 0)}"
+
+
+def guess(link: Link) -> str:
+    """
+    Фраза про догадку - связь, набравшую всего по несколько дней с фактором и
+    без. say() говорит уверенно («и заметно»), а здесь уверенности нет, и это
+    должно быть слышно в самой фразе, а не только в метке рядом.
+    """
+    start = factor_phrase(link.factor)
+    if "," in start:
+        start += ","
+    when = {0: "в тот же день", 1: "на следующий день", 2: "через день"}[link.lag_days]
+    change = metric_phrase(link.metric, link.effect < 0)
+    return (f"{start} {when} {change} - на {_score(abs(link.effect))} из 10, "
+            f"но дней пока мало, чтобы утверждать.")
+
+
+def compared(link: Link, own: bool = True) -> str:
+    """
+    На чём держится находка: сколько дней сравнили и откуда они. own=False -
+    придуманный дневник: «по вашим записям» про него было бы неправдой.
+    """
+    days = f"Сравнили {days_count(link.days_with)} с этим и {link.days_without} без"
+    if not own:
+        return days + "."
+    source = {"прибор": "по данным кольца",
+              "погода": "по погоде в вашем городе",
+              "еда": "по вашим числам о еде"}.get(link.source, "по вашим записям")
+    return f"{days}, {source}."
+
+
 def basis(link: Link) -> str:
     """Откуда это известно - чтобы человек понимал, на чём вывод держится."""
     source = {"прибор": "по данным кольца",

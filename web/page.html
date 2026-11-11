@@ -120,21 +120,54 @@
  #send .arrow{display:none}
 
  /* Разделы открываются на месте разговора, как вкладки. Прокручивается
-    только содержимое, заголовок раздела стоит на месте. */
+    содержимое целиком: заголовок раздела - часть страницы, как в макетах
+    docs/design/sections_*.html. */
  .panel{flex:1;min-height:0;display:flex;flex-direction:column}
- .scroll{flex:1;min-height:0;overflow-y:auto;padding:24px 56px 32px;
-  display:flex;flex-direction:column;gap:14px}
- /* Колонка прокручивается целиком, поэтому блокам нельзя ужиматься по высоте:
-    иначе последние строки списка и кнопки обрезаются на невысоком экране. */
- .scroll>*{flex:none;width:100%;max-width:720px}
+ .scroll{flex:1;min-height:0;overflow-y:auto;padding:34px 56px 40px}
+ .view>*{max-width:720px}
+ .view h1{margin:0 0 6px;font-size:28px;font-weight:600;letter-spacing:-.01em}
+ .view .lead{margin:0 0 26px;max-width:640px;font-size:15px;line-height:1.5;color:#6f6a60}
+
+ /* Группа строк с подписью обычным регистром: заглавные буквы кричат громче
+    самих строк, а подпись тут - только навигация. */
+ .sec{margin-bottom:26px}
+ .sec h3{margin:0 0 10px;font-size:15px;font-weight:600;color:#6f6a60}
+ /* Строка раздела: слева что это и зачем, справа действие. */
+ .line{display:flex;align-items:center;gap:18px;margin-bottom:8px;padding:18px 20px;
+  background:var(--bg);border:1px solid var(--bubble-line);border-radius:12px}
+ .line .t{flex:1;min-width:0}
+ .line .t>b{display:block;margin-bottom:4px;font-size:16px;font-weight:600}
+ .line .t>p{margin:0;font-size:14px;line-height:1.5;color:var(--soft)}
+ .line .t>*+*{margin-top:8px}
+ .line .t>b+p{margin-top:0}
+ .act{flex:none;display:flex;align-items:center;gap:8px}
+ .act input[type=text],.act input[type=password]{width:220px}
+ /* Источник «скоро»: намерение, а не работающая часть - тише остальных. */
+ .line.muted{opacity:.62}
+ /* Высокая строка с полями: состояние у заголовка, а не посередине полей */
+ .line.tall{align-items:flex-start}
+ .st{font-size:13px;color:var(--dim);white-space:nowrap}
+ /* Включённое отличается весом, а не цветом: цветные слова на странице спорят
+    с единственным цветным действием - удалением. */
+ .st.on{color:var(--ink);font-weight:600}
+
+ .sec button,.view button{padding:9px 16px;font-size:14px;font-weight:600;white-space:nowrap}
+ .view button.ghost{color:var(--accent);border-color:#d8d2c4}
+ /* Удаление - единственное красное на странице: его нельзя нажать по ошибке
+    и нельзя не заметить. */
+ .view button.danger{background:var(--bg);color:#b42318;border-color:#efc9c4}
+ .view button.danger:not(:disabled):hover{background:#fdf5f4;border-color:#e3aaa3}
+ /* Блок экрана входа и согласия */
  .block{background:var(--bg);border:1px solid var(--bubble-line);border-radius:12px;overflow:hidden}
  .head{padding:16px 20px 0}
  .head h2{margin:0;font-size:18px;font-weight:600}
  .body{padding:16px 20px;display:flex;flex-direction:column;gap:12px}
  .hint{margin:0;font-size:13.5px;line-height:1.5;color:var(--soft)}
  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
- .panel input[type=text],.panel input[type=password],.gate input[type=text]{width:100%;padding:10px 12px;font:inherit;
-  color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:8px}
+ .panel input[type=text],.panel input[type=password],.gate input[type=text]{width:100%;padding:9px 12px;font:inherit;
+  font-size:14px;color:var(--ink);background:#fdfcf9;border:1px solid #d8d2c4;border-radius:8px}
+ .panel .act input[type=text],.panel .act input[type=password]{width:220px}
+ .panel input::placeholder{color:#a39c8f}
  .ok{margin:0;font-size:14px}
  .ok b{font-weight:500}
  /* Сдержанный тон: жёлтая плашка кричала громче самой ошибки. */
@@ -142,110 +175,80 @@
   border-radius:8px;font-size:13px;color:#8a3d3d}
  .code{margin:0;padding:12px;text-align:center;border:1px dashed var(--accent);border-radius:8px;
   font-size:21px;font-weight:600;letter-spacing:.05em;color:var(--accent)}
+ .view .code{max-width:360px}
  .stack{display:flex;flex-direction:column;gap:10px}
 
- .card{display:flex;align-items:baseline;gap:9px;padding:8px 0;font-size:14px;
-  color:var(--off);border-bottom:1px solid var(--hair)}
- /* Точку держим у первой строки: на узком экране название с пояснением
-    переносится, и точка по центру блока оказывалась напротив пустого места. */
- .card::before{content:'';flex:none;align-self:flex-start;margin-top:7px;width:7px;height:7px;
-  border-radius:50%;border:1px solid #c4bcac}
- .card.on{color:var(--ink)}
- .card.on::before{background:var(--accent);border-color:var(--accent)}
- .card:last-child{border-bottom:0}
- /* Состояние словом: точка в семь пикселей - слишком тихий признак, заказчик
-    смотрел на панель и не понимал, что из этого работает. */
- .card .state{flex:none;margin-left:auto;font-size:12px;padding:2px 8px;border-radius:999px;
-  border:1px solid var(--line);color:var(--soft);background:var(--bg);white-space:nowrap}
- .card.on .state{color:var(--accent);border-color:var(--accent)}
- .card{flex-wrap:wrap}
- .card b{flex:none;font-weight:500}
- /* Пояснение занимает остаток строки и переносится целиком: пока оно делило
-    строку с подписью состояния, «сон, стресс, шаги» рвалось посередине. */
- .card em{flex:1 1 100%;order:3;font-style:normal;font-size:13px;color:var(--soft);
-  margin-top:2px}
- /* Привязанный чат: строка с кнопкой в ряд. Рамка вокруг одного чата с
-    кнопкой внутри читалась как отдельный блок ни о чём. */
- #tg-chats{display:flex;flex-direction:column;gap:6px;margin:8px 0}
- .card.chat{display:flex;align-items:center;justify-content:space-between;gap:10px;
-  padding:7px 0;border:0;color:var(--ink);font-size:13.5px}
- .card.chat::before{display:none}
- .card.chat button{padding:5px 10px;font-size:12.5px}
- /* Подробности про напоминания - за раскрывашкой: на странице они не работают,
-    а место занимали абзацем. */
- .tg-more{font-size:13px;margin-top:4px}
- .tg-more summary{color:var(--soft);cursor:pointer}
- .tg-more .hint{margin-top:6px}
+ /* ── Что Мира заметила ─────────────────────────────────────────────── */
+ .prog{max-width:420px;height:6px;margin:12px 0 4px;background:var(--bubble-line);border-radius:3px}
+ .prog span{display:block;height:6px;background:var(--accent);border-radius:3px}
+ .line .t>.prog+p{margin-top:0;font-size:13px}
+ .find{margin-bottom:10px;padding:20px 22px;background:var(--bg);
+  border:1px solid var(--bubble-line);border-radius:12px}
+ .find .h{display:flex;justify-content:space-between;align-items:baseline;gap:16px}
+ .find .h b{font-size:17px;font-weight:600}
+ .tag{flex:none;padding:3px 9px;font-size:12px;color:var(--soft);white-space:nowrap;
+  border:1px solid #e1dbcd;border-radius:10px}
+ .find>p{margin:8px 0 0;font-size:15px;line-height:1.55;color:#4b5160}
+ .find>p.basis{margin-top:4px;font-size:13px;color:var(--dim)}
+ .find>button{margin-top:12px}
+ .find ol{margin:12px 0 0;padding-left:20px;font-size:14px;line-height:1.55;color:var(--text)}
+ /* Догадка - тише вывода: три дня против трёх не должны выглядеть как факт. */
+ .find.weak{opacity:.62}
+ .pick{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;margin:0 0 12px;
+  font-size:13.5px;color:var(--soft)}
+ .pick span{flex:1 1 100%}
+ .pick select{font:inherit;font-size:13.5px;color:var(--ink);padding:5px 8px;
+  background:var(--bg);border:1px solid var(--line);border-radius:8px}
 
- /* ── Панель источников ────────────────────────────────────────────────
-    Источник - строка, настройки раскрываются по клику. Разом развёрнутые поля
-    трёх источников превращали панель в простыню, где не видно границ. */
- .sources{display:flex;flex-direction:column}
- .src{border-bottom:1px solid var(--hair)}
- .src summary{list-style:none;display:flex;align-items:center;gap:8px;
-  padding:14px 20px;cursor:pointer}
- .src summary::-webkit-details-marker{display:none}
- .src summary b{font-weight:600}
- .src summary .sub{font-size:12.5px;color:var(--soft)}
- /* Уголок поворачивается на раскрытии: он и показывает, что строку можно нажать. */
- .src summary .chev{width:0;height:0;border:4px solid transparent;
-  border-top-color:var(--soft);transform:rotate(-90deg);transition:transform .15s}
- .src[open] summary .chev{transform:none}
- .src summary .st{margin-left:auto;font-size:12px;color:var(--soft);white-space:nowrap}
- .src summary .st.on{color:var(--accent)}
- .src summary:hover{background:var(--tint)}
- .src .in{padding:0 20px 16px}
-
- .ring{display:flex;flex-direction:column;gap:8px}
- .ring label{display:flex;align-items:center;gap:10px;font-size:13.5px;color:var(--text)}
- .ring input[type=range]{flex:1;min-width:0;accent-color:var(--accent)}
+ /* ── Источники ─────────────────────────────────────────────────────── */
+ .ring{display:flex;flex-direction:column;gap:8px;max-width:420px}
+ /* Сеткой, а не строкой: у «Сон» и «Стресс» разная ширина, и ползунки
+    начинались вразнобой. */
+ .ring label{display:grid;grid-template-columns:56px 1fr 46px;align-items:center;gap:10px;
+  font-size:13.5px;color:var(--text)}
+ .ring input[type=range]{min-width:0;accent-color:var(--accent)}
  .ring span{min-width:46px;text-align:right;font-weight:500;font-variant-numeric:tabular-nums}
 
  /* Подпись над полем, а не рядом: «Углеводы, г» рядом с полем ужимало само поле
     до нечитаемой ширины. */
- .kbju .fields{display:grid;grid-template-columns:1fr 1fr;gap:9px 10px}
- .kbju label{display:flex;flex-direction:column;gap:3px;font-size:11.5px;color:var(--soft)}
+ .kbju .fields{display:grid;grid-template-columns:repeat(4,1fr);gap:9px 10px;max-width:480px}
+ .kbju label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--soft)}
  .kbju input[type=number]{width:100%;padding:7px 9px;font:inherit;font-size:13px;
-  color:var(--ink);background:var(--bg);border:1px solid var(--line);border-radius:7px}
- .kbju .row{margin-top:10px}
- .kbju details.inner{margin-top:10px;font-size:12.5px}
- .kbju details.inner summary{padding:0;color:var(--soft);cursor:pointer}
- .kbju textarea{width:100%;box-sizing:border-box;margin-top:8px;padding:9px 11px;
-  font:inherit;font-size:13px;color:var(--ink);background:var(--bg);
-  border:1px solid var(--line);border-radius:8px;resize:vertical}
+  color:var(--ink);background:#fdfcf9;border:1px solid #d8d2c4;border-radius:7px}
+ .kbju details{font-size:13px}
+ .kbju details summary{color:var(--soft);cursor:pointer}
+ .kbju textarea{width:100%;max-width:480px;box-sizing:border-box;margin-top:8px;padding:9px 11px;
+  font:inherit;font-size:13px;color:var(--ink);background:#fdfcf9;
+  border:1px solid #d8d2c4;border-radius:8px;resize:vertical}
  .kbju code{font-size:12.5px;color:var(--ink)}
 
- .city .row{display:flex;align-items:center;gap:10px;flex-wrap:nowrap}
- .city .row input[type=text]{flex:1;min-width:0}
  /* Что погода дала сегодня: без этого источник работал молча - факторы ложились
     в дневник, а человек не понимал, включилось ли что-нибудь. */
- #weather-today{margin-top:10px;padding:9px 11px;background:#f5f3ee;border-radius:8px;
-  font-size:12.5px;line-height:1.5;color:var(--text)}
+ #weather-today{padding:9px 11px;background:#f5f3ee;border-radius:8px;
+  font-size:13px;line-height:1.5;color:var(--text)}
  #weather-today b{font-weight:500;color:var(--ink)}
  #weather-today .got{margin-top:3px;color:var(--accent)}
  #weather-today .plain{margin-top:3px;color:var(--soft)}
 
- /* Неподключённые: тише остальных и одной строкой - это намерение, а не
-    работающий источник. */
- #sources{padding:12px 20px 14px;background:var(--tint)}
- #sources .h{font-size:12px;color:var(--soft);margin-bottom:5px}
- #sources{display:flex;flex-wrap:wrap;gap:4px 8px;align-items:baseline}
- #sources .h{flex:1 1 100%}
- #sources .card{display:inline;padding:0;font-size:13px;color:var(--soft);border:0}
- #sources .card:not(:last-child)::after{content:','}
- #sources .card b{font-weight:500}
- #sources .card em{font-style:normal}
- #sources .card .state,#sources .card::before{display:none}
-
- select{font:inherit;font-size:13.5px;color:var(--ink);padding:7px 10px;max-width:240px;
-  background:var(--bg);border:1px solid var(--line);border-radius:8px}
-
- .engine{padding:0 2px 4px;font-size:13px;line-height:1.5;color:var(--dim)}
+ /* ── Мои данные и Telegram ─────────────────────────────────────────── */
+ .chat-row{display:flex;align-items:center;justify-content:space-between;gap:10px;
+  padding:6px 0;font-size:14px;border-top:1px solid var(--hair)}
+ .chat-row b{font-weight:500}
+ .view button.small-btn{padding:5px 11px;font-size:13px}
+ .engine{max-width:720px;margin:0;font-size:13px;line-height:1.6;color:var(--dim)}
  .engine p{margin:0}
- .engine b{font-weight:500;color:var(--soft)}
+ .engine a{color:var(--accent);text-underline-offset:3px}
  .engine #model-error{margin-top:4px;color:#8a5b2f}
- .engine summary{margin-top:5px;color:var(--soft);cursor:pointer}
+ .engine summary{margin-top:4px;color:var(--soft);cursor:pointer}
  .engine details p{margin-top:6px}
+ #account a,#tg-panel a{color:var(--accent)}
+
+ /* Неброская кнопка-ссылка в шапке разговора: очистить ленту нужно редко, и
+    рядом с полем ввода её легко нажать вместо «Отправить». */
+ button.link{padding:0;font-size:13px;font-weight:400;color:var(--dim);background:none;border:0;
+  text-decoration:underline;text-underline-offset:3px}
+ button.link:not(:disabled):hover{background:none;color:var(--ink)}
+ .top .side-r{display:flex;align-items:baseline;gap:16px}
 
  /* Какой раздел открыт. Невыбранное прячем, но из разметки не убираем: опрос
     состояния продолжает писать и в скрытые разделы, иначе после переключения
@@ -266,8 +269,6 @@
  .gate .agree{display:flex;gap:9px;align-items:flex-start;font-size:14px;color:var(--text)}
  .gate .agree input{margin-top:4px}
  .gate-brand{display:none}
- #account a{color:var(--accent)}
- #account .tg-more .row{margin-top:8px}
 
  /* Телефон: разговор на весь экран, разделы переключаются полосой внизу -
     это та же панель слева, только кнопки встали в ряд. */
@@ -302,8 +303,23 @@
   #send span{display:none}
   #send .arrow{display:block}
   .micnote{margin:6px 16px 0}
-  .scroll{padding:14px 12px 20px}
+  .scroll{padding:20px 16px 24px}
   .phone{display:block}
+  .view .phone{margin:-8px 0 20px}
+  .view h1{font-size:22px}
+  .view .lead{margin-bottom:20px;font-size:14px}
+  /* Строки складываются в колонку, кнопки - на всю ширину: на узком экране
+     кнопка справа от текста сжимала сам текст до трёх слов в строке. */
+  .line{flex-direction:column;align-items:stretch;gap:14px;padding:16px}
+  .act{flex-direction:column;align-items:stretch}
+  .act button,.act input[type=text],.act input[type=password],
+  .panel .act input[type=text],.panel .act input[type=password]{width:100%}
+  .act .st{white-space:normal}
+  .find{padding:16px}
+  .find .h{flex-direction:column;gap:6px}
+  .find>button{width:100%;white-space:normal}
+  .kbju .fields{grid-template-columns:1fr 1fr}
+  .top .side-r{gap:12px}
   .gate{padding:20px 14px}
   .gate-brand{display:flex;align-items:center;gap:10px;margin:0 auto 16px;max-width:520px;
    font-size:20px;font-weight:600}
@@ -384,7 +400,11 @@
 <section class="talk" id="grid">
     <div class="top">
       <div class="title"><img class="mini" src="/mira-mark.png" alt="" width="28" height="28"><h2>Сегодня</h2></div>
-      <span class="when" id="today"></span>
+      <div class="side-r">
+        <span class="when" id="today"></span>
+        <!-- Подпись ставит скрипт: в режиме server - «Очистить ленту» -->
+        <button class="link" id="reset" onclick="reset()">Начать заново</button>
+      </div>
     </div>
     <div class="feed" id="feed"></div>
     <div class="bar">
@@ -408,177 +428,247 @@
 </section>
 
 <section class="panel" id="panel">
-  <!-- Заголовок - имя открытого раздела, его ставит скрипт -->
-  <div class="top"><h2 id="view-title"></h2></div>
   <div class="scroll">
-    <section class="block" data-panel="insights">
-      <div class="body">
-        <div class="row"><select id="days" aria-label="Срок дневника"></select></div>
-        <p class="hint" id="demo-note">Дневник за выбранный срок придуман для показа: связи в нём заложены заранее.</p>
-        <div class="row">
-          <button class="small ghost" id="sum" onclick="summary()">Показать все выводы</button>
-          <button class="small ghost" id="reset" onclick="reset()">Начать заново</button>
-        </div>
-        <p class="hint" id="counting" hidden>Считаю выводы за выбранный срок - это несколько секунд.
-          Они появятся в разговоре.</p>
-        <div class="row" id="export-row">
-          <button class="small ghost" onclick="save('text')">Скачать дневник</button>
-          <button class="small ghost" onclick="save('csv')">Таблицей для Excel</button>
-        </div>
-        <p class="hint" id="export-note">Ваши записи одним файлом - чтобы принести врачу не «мне плохо», а дни
-          с цифрами. Придуманный дневник в файл не идёт. Файл собирается в момент нажатия
-          и на сервере не остаётся.</p>
+    <!-- Что Мира заметила: свой дневник и пример на придуманном. Оба блока
+         рисует скрипт по ответам /insights и /insights/example. -->
+    <section class="view" data-panel="insights">
+      <h1>Что Мира заметила</h1>
+      <p class="lead">Здесь появляются связи между тем, что вы делаете, и тем, как себя
+        чувствуете. Мира показывает только то, что повторилось несколько раз.</p>
+      <div class="sec">
+        <h3>Ваш дневник</h3>
+        <div id="own"><p class="hint">Считаю...</p></div>
+      </div>
+      <div class="sec">
+        <h3>Так это будет выглядеть: пример на придуманном дневнике</h3>
+        <div class="pick"><label for="days">Придуманный дневник за</label>
+          <select id="days" onchange="example()"></select>
+          <span>Связи в нём заложены заранее, это не ваши записи.</span></div>
+        <div id="demo"></div>
       </div>
     </section>
 
-    <!-- Источник = строка, настройки раскрываются по клику. Пока всё стояло
-         развёрнутым, панель была простынёй: поля, кнопки и серые абзацы шли
-         подряд, и было не видно, где кончается один источник. -->
-    <section class="block" data-panel="sources">
-      <div class="sources">
-        <details class="src" id="src-ring" open>
-          <summary><b>Умное кольцо Sber</b><i class="chev"></i><span class="st on">подключено</span></summary>
-          <div class="in ring">
-            <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
-            <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
-            <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
-            <p class="hint">Двигаются руками - в продукте приходят от устройства.</p>
+    <section class="view" data-panel="sources">
+      <h1>Источники</h1>
+      <p class="lead">Кроме ваших слов Мира может учитывать данные, которые собираются
+        сами. Чем больше источников, тем точнее выводы.</p>
+      <div class="sec">
+        <h3>Можно подключить сейчас</h3>
+        <!-- Погода подключается городом: пока его нет, источник и правда не
+             работает. После подключения вместо поля - город и «Сменить». -->
+        <div class="line" id="src-weather">
+          <div class="t">
+            <b>Погода</b>
+            <p>Давление, температура и облачность за каждый день - как ещё один фактор,
+              как кофе или сон.</p>
+            <div id="weather-today" hidden></div>
+            <p class="hint" id="city-note" hidden></p>
+            <p class="hint" id="weather-from">Данные: open-meteo.com, без ключа.</p>
           </div>
-        </details>
+          <div class="act" id="city-edit">
+            <input id="city" type="text" autocomplete="off" placeholder="город, например Москва"
+                   aria-label="Город" onkeydown="if(event.key==='Enter') setCity()">
+            <button id="city-btn" onclick="setCity()">Подключить</button>
+          </div>
+          <div class="act" id="city-on" hidden>
+            <span class="st on" id="city-name"></span>
+            <button class="ghost" onclick="editCity()">Сменить</button>
+          </div>
+        </div>
 
-        <details class="src" id="src-food">
-          <summary><b>Еда</b><span class="sub">КБЖУ</span><i class="chev"></i><span class="st on">подключено</span></summary>
-          <div class="in kbju">
+        <!-- Кольцо и КБЖУ числами - только режим local: там это стенд с ручным
+             вводом. На сервере они стоят в «Скоро» (DEVICES). -->
+        <div class="line tall" id="src-ring">
+          <div class="t">
+            <b>Умное кольцо Sber</b>
+            <p>Сон, стресс и шаги. В прототипе двигаются руками - в продукте приходят
+              от устройства.</p>
+            <div class="ring">
+              <label>Сон <input type="range" id="sleep" min="0" max="100" value="41" oninput="lbl()"><span id="sleepv">41</span></label>
+              <label>Стресс <input type="range" id="stress" min="0" max="100" value="72" oninput="lbl()"><span id="stressv">72</span></label>
+              <label>Шаги <input type="range" id="steps" min="0" max="20000" step="500" value="3000" oninput="lbl()"><span id="stepsv">3000</span></label>
+            </div>
+          </div>
+          <div class="act"><span class="st on">вручную</span></div>
+        </div>
+
+        <div class="line tall" id="src-food">
+          <div class="t kbju">
+            <b>Еда с калориями</b>
+            <p>КБЖУ за день. Из чисел выходят факторы дня: переел, недоел, мало белка,
+              много углеводов.</p>
             <div class="fields">
               <label>Калории <input id="kcal" type="number" min="0" step="10"></label>
               <label>Белки, г <input id="protein" type="number" min="0" step="1"></label>
               <label>Жиры, г <input id="fat" type="number" min="0" step="1"></label>
               <label>Углеводы, г <input id="carbs" type="number" min="0" step="1"></label>
             </div>
-            <div class="row">
-              <button class="small ghost" onclick="sendFood()">Записать за день</button>
-            </div>
-            <details class="inner">
+            <div class="row"><button class="ghost" onclick="sendFood()">Записать за день</button></div>
+            <details>
               <summary>Загрузить выгрузку из приложения</summary>
               <p class="hint">Строка на день, пять колонок с такой шапкой:<br>
                 <code>дата,калории,белки,жиры,углеводы</code><br>
                 Дата - 2026-08-01 или 01.08.2026, разделитель - запятая или точка с запятой.</p>
               <textarea id="food-csv" rows="4" placeholder="дата,калории,белки,жиры,углеводы
 2026-08-01,2900,70,95,410"></textarea>
-              <div class="row"><button class="small ghost" onclick="sendFood(true)">Загрузить</button></div>
+              <div class="row"><button class="ghost" onclick="sendFood(true)">Загрузить</button></div>
             </details>
-            <p class="hint" id="food-note">Из чисел выходят факторы дня: переел, недоел,
-              мало белка, много углеводов.</p>
+            <p class="hint" id="food-note" hidden></p>
           </div>
-        </details>
-
-        <details class="src" id="src-weather" open>
-          <summary><b>Погода</b><span class="sub" id="city-name">город не назван</span><i class="chev"></i><span class="st">не подключено</span></summary>
-          <div class="in city">
-            <div class="row">
-              <input id="city" type="text" autocomplete="off" placeholder="город, например Москва"
-                     onkeydown="if(event.key==='Enter') setCity()">
-              <button class="small ghost" onclick="setCity()">Сохранить</button>
-            </div>
-            <div id="weather-today" hidden></div>
-            <p class="hint" id="city-note">Назовите город - и погода станет таким же фактором
-              дня, как кофе.</p>
-            <p class="hint" id="weather-from">Данные: open-meteo.com, без ключа.</p>
-          </div>
-        </details>
-
-        <!-- Источники, которых пока нет. Отдельным списком и тише остальных:
-             это намерение, а не работающая часть. -->
-        <div id="sources"></div>
+          <div class="act"><span class="st on">вручную</span></div>
+        </div>
+      </div>
+      <!-- Источники, которых пока нет: рисует скрипт из списка SOURCES -->
+      <div class="sec">
+        <h3>Скоро</h3>
+        <div id="soon"></div>
       </div>
     </section>
 
     <!-- Режим server: вместо панели бота - свой аккаунт и свои данные. -->
-    <section class="block" data-panel="telegram" id="account" hidden>
-      <div class="body">
-        <!-- На телефоне панели слева нет: кто вошёл, говорим здесь -->
-        <p class="hint phone" id="whoami-phone"></p>
-        <p class="ok" id="account-tg" hidden>Telegram подключён<span id="account-name"></span></p>
-        <!-- Только у того, кто начал на сайте, и только если у сервиса есть бот -->
-        <div class="stack" id="tg-link-box" hidden>
-          <div class="row"><button class="small ghost" onclick="linkTelegram()">Подключить Telegram</button></div>
-          <p class="hint" id="tg-link-note" hidden>Откройте ссылку и нажмите в боте «Запустить»:
-            <a id="tg-link" href="#" target="_blank" rel="noopener">открыть бота</a>.
-            Бот пришлёт ответную ссылку - откройте её в этом же браузере. Обе ссылки
-            действуют десять минут и срабатывают один раз.</p>
+    <section class="view" data-panel="telegram" id="account" hidden>
+      <h1>Мои данные</h1>
+      <p class="lead">Ваш дневник принадлежит вам: его можно скачать, открыть на другом
+        устройстве или удалить целиком.</p>
+      <!-- На телефоне панели слева нет: кто вошёл, говорим здесь -->
+      <p class="hint phone" id="whoami-phone"></p>
+      <div class="sec">
+        <h3>Вход</h3>
+        <div class="line">
+          <div class="t">
+            <b>Личный код</b>
+            <p id="code-about">Открывает дневник на другом устройстве. Если код мог кто-то
+              увидеть - смените его, старый перестанет работать.</p>
+            <div class="code" id="code-value" hidden></div>
+            <p class="hint" id="code-warn" hidden>Сохраните его. Потеряете код и выйдете -
+              дневник не вернуть.</p>
+          </div>
+          <div class="act"><button class="ghost" id="code-btn" onclick="personalCode()">Сменить код</button></div>
         </div>
-        <div class="stack">
-          <div class="row"><button class="small ghost" id="code-btn" onclick="personalCode()">Показать код</button></div>
-          <p class="hint" id="code-about">Личный код открывает дневник на другом устройстве.</p>
-          <div class="code" id="code-value" hidden></div>
-          <p class="hint" id="code-warn" hidden>Сохраните его. Потеряете код и выйдете - дневник
-            не вернуть.</p>
+        <!-- Только если у сервиса есть бот или человек уже пришёл из Telegram -->
+        <div class="line" id="tg-row" hidden>
+          <div class="t">
+            <b>Telegram</b>
+            <p id="tg-row-text">Записывать день можно и в чате с ботом - записи попадут в этот
+              же дневник.</p>
+            <p class="hint" id="tg-link-note" hidden>Откройте ссылку и нажмите в боте «Запустить»:
+              <a id="tg-link" href="#" target="_blank" rel="noopener">открыть бота</a>.
+              Бот пришлёт ответную ссылку - откройте её в этом же браузере. Обе ссылки
+              действуют десять минут и срабатывают один раз.</p>
+          </div>
+          <div class="act">
+            <span class="st on" id="account-tg" hidden>подключён<span id="account-name"></span></span>
+            <button class="ghost" id="tg-link-btn" onclick="linkTelegram()">Подключить</button>
+          </div>
         </div>
-        <div class="row">
-          <button class="small ghost" onclick="save('text')">Скачать дневник</button>
-          <button class="small ghost" onclick="save('csv')">Таблицей для Excel</button>
+        <div class="line">
+          <div class="t"><b>Выход</b><p>На этом устройстве или сразу на всех, где вы входили.</p></div>
+          <div class="act">
+            <button class="ghost" onclick="logout()">Выйти</button>
+            <button class="ghost" onclick="logout(true)">Выйти везде</button>
+          </div>
         </div>
-        <details class="tg-more">
-          <summary>Удалить всё</summary>
-          <p class="hint">Удалятся записи, напоминания, вход на страницу и сам аккаунт.
-            Вернуть их будет нельзя. Чтобы подтвердить, впишите слово УДАЛИТЬ.</p>
-          <div class="row"><input id="erase-word" type="text" autocomplete="off"
-                 placeholder="УДАЛИТЬ"></div>
-          <div class="row"><button class="small ghost" onclick="eraseAll()">Удалить всё</button></div>
-        </details>
-        <div class="row"><button class="small ghost" onclick="logout()">Выйти</button>
-          <button class="small ghost" onclick="logout(true)">Выйти на всех устройствах</button></div>
-        <p class="hint"><a href="/privacy" target="_blank" rel="noopener">Как мы обращаемся
-          с данными</a></p>
-        <p class="warn" id="account-error" hidden></p>
       </div>
+      <div class="sec">
+        <h3>Ваши записи</h3>
+        <div class="line">
+          <div class="t"><b>Скачать дневник</b><p>Все записи - текстом для врача или таблицей
+            для Excel. Файл собирается в момент нажатия и на сервере не остаётся.</p></div>
+          <div class="act">
+            <button class="ghost" onclick="save('text')">Текстом</button>
+            <button class="ghost" onclick="save('csv')">Таблицей</button>
+          </div>
+        </div>
+      </div>
+      <div class="sec">
+        <h3>Удаление</h3>
+        <div class="line">
+          <div class="t">
+            <b>Удалить всё</b>
+            <p>Записи, напоминания, вход на страницу и сам аккаунт удалятся без возможности
+              восстановления.</p>
+            <!-- Подтверждение словом: кнопку можно нажать случайно, слово - нет -->
+            <div class="stack" id="erase-box" hidden>
+              <p class="hint">Чтобы подтвердить, впишите слово УДАЛИТЬ.</p>
+              <div class="row"><input id="erase-word" type="text" autocomplete="off"
+                     placeholder="УДАЛИТЬ" aria-label="Слово для подтверждения"></div>
+              <div class="row"><button class="danger" onclick="eraseAll()">Удалить навсегда</button></div>
+            </div>
+          </div>
+          <div class="act"><button class="danger" id="erase-open" onclick="openErase()">Удалить дневник</button></div>
+        </div>
+      </div>
+      <p class="warn" id="account-error" hidden></p>
     </section>
 
-    <section class="block" data-panel="telegram" id="tg-panel">
-      <div class="body">
-        <div id="tg-off" class="stack">
-          <p class="hint">Мира живёт в мессенджере. Подключите своего бота от
-            BotFather - и записи из чата будут видны здесь, в этой же ленте.</p>
-          <div class="row"><input id="tg-token" type="password" autocomplete="off"
-                 placeholder="токен от BotFather"></div>
-          <div class="row">
-            <button class="small" onclick="connect(false)">Подключить</button>
-            <button class="small ghost" id="tg-env" hidden onclick="connect(true)">Взять токен из окружения</button>
+    <!-- Режим local: свой бот от BotFather и привязка чата. -->
+    <section class="view" data-panel="telegram" id="tg-panel">
+      <h1>Telegram</h1>
+      <p class="lead">Мира живёт и в мессенджере. Подключите своего бота - и записи из чата
+        будут видны здесь, в этой же ленте.</p>
+      <div class="sec">
+        <h3>Бот</h3>
+        <div class="line" id="tg-off">
+          <div class="t"><b>Свой бот от BotFather</b><p>Токен остаётся только в памяти
+            программы: ни в файл, ни в ответы сервера он не попадает. После перезапуска
+            введите его заново.</p></div>
+          <div class="act">
+            <input id="tg-token" type="password" autocomplete="off" placeholder="токен от BotFather"
+                   aria-label="Токен бота">
+            <button onclick="connect(false)">Подключить</button>
+            <button class="ghost" id="tg-env" hidden onclick="connect(true)">Взять из окружения</button>
           </div>
-          <p class="hint">Токен остаётся только в памяти программы: ни в файл, ни в ответы сервера
-            он не попадает. После перезапуска введите его заново.</p>
         </div>
-
-        <div id="tg-on" class="stack" hidden>
-          <p class="ok">Бот на связи: <b id="tg-name"></b></p>
-          <div id="tg-code-box" class="stack">
-            <p class="hint">Напишите боту этот код - и чат со страницей будут вести один дневник:</p>
-            <div class="code" id="tg-code"></div>
-            <p class="hint" id="tg-code-note">Код срабатывает один раз и живёт четверть часа.</p>
-            <div class="row"><button class="small ghost" onclick="newCode()">Показать новый код</button></div>
+        <div id="tg-on" hidden>
+          <div class="line">
+            <div class="t"><b>Бот на связи</b><p id="tg-name"></p></div>
+            <div class="act"><button class="ghost" onclick="disconnect()">Отключить</button></div>
           </div>
-          <div id="tg-linked" hidden>
-            <p class="ok">Чат привязан - записи из него видны в разговоре.</p>
-            <!-- Список чатов: строка с кнопкой в ряд, а не рамка с кнопкой внутри.
-                 Рамка вокруг одного чата выглядела как отдельный блок ни о чём. -->
-            <div id="tg-chats"></div>
-            <p class="hint">Отвязать - закрыть чату доступ. Записи остаются здесь.</p>
+          <div class="line" id="tg-code-box">
+            <div class="t">
+              <b>Код привязки</b>
+              <p>Напишите боту этот код - и чат со страницей будут вести один дневник.</p>
+              <div class="code" id="tg-code"></div>
+              <p class="hint" id="tg-code-note">Код срабатывает один раз и живёт четверть часа.</p>
+            </div>
+            <div class="act"><button class="ghost" onclick="newCode()">Показать новый код</button></div>
           </div>
-          <div class="row"><button class="small ghost" onclick="disconnect()">Отключить</button></div>
+          <div class="line" id="tg-linked" hidden>
+            <div class="t">
+              <b>Привязанные чаты</b>
+              <p>Записи из них видны в разговоре. Отвязать - закрыть чату доступ, записи
+                останутся здесь.</p>
+              <div id="tg-chats"></div>
+            </div>
+          </div>
           <!-- Напоминания работают в чате, и сказать про них надо там, где человек
                его подключил. На странице они бессмысленны: она либо открыта, либо нет. -->
-          <details class="tg-more">
-            <summary>Напоминания</summary>
-            <p class="hint">Вечером бот напомнит записать день, если за день от вас ничего
-              не было. В чате: «/напоминание 20:30» или «/напоминание выкл».</p>
-          </details>
+          <div class="line">
+            <div class="t"><b>Напоминания</b><p>Вечером бот напомнит записать день, если за
+              день от вас ничего не было. В чате: «/напоминание 20:30» или
+              «/напоминание выкл».</p></div>
+          </div>
         </div>
         <p class="warn" id="tg-error" hidden></p>
       </div>
+      <div class="sec">
+        <h3>Ваши записи</h3>
+        <div class="line">
+          <div class="t"><b>Скачать дневник</b><p>Ваши записи - текстом для врача или таблицей
+            для Excel. Придуманный дневник в файл не идёт. Файл собирается в момент нажатия
+            и на сервере не остаётся.</p></div>
+          <div class="act">
+            <button class="ghost" onclick="save('text')">Текстом</button>
+            <button class="ghost" onclick="save('csv')">Таблицей</button>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <div class="engine" data-panel="insights">
-      <p>Речь разбирает <b>__ENGINE__</b>.</p>
+    <!-- Общий низ четвёртого раздела в обоих режимах: кто разбирает речь. -->
+    <div class="engine" data-panel="telegram">
+      <p>__ENGINE__ <a id="privacy-link" href="/privacy" target="_blank" rel="noopener"
+        hidden>Как мы обращаемся с данными</a></p>
       <p id="model-error" hidden></p>
       <details>
         <summary>Как устроен разбор речи</summary>
@@ -592,45 +682,50 @@
 </main>
 
 <script>
-// Источники рисуются из одного списка одним шаблоном: когда появится общий
-// реестр источников, сюда встанет его список, а разметку менять не придётся.
-// Кольцо и КБЖУ числами - в режиме local стенд с придуманными значениями. На
-// сервере они выключены (DEVICES в web/server.py): придуманные цифры кольца
-// ложились в настоящий дневник человека. Там они стоят в списке «Пока не
-// подключено», а их строки с ползунками и полями спрятаны.
+// Источники «Скоро» рисуются из одного списка одним шаблоном: когда появится
+// общий реестр источников, сюда встанет его список, а разметку менять не придётся.
+// Кольцо и КБЖУ числами - в режиме local стенд с ручным вводом, их строки с
+// ползунками и полями стоят в «Можно подключить сейчас». На сервере они
+// выключены (DEVICES в web/server.py): придуманные цифры кольца ложились в
+// настоящий дневник человека. Там они - в «Скоро».
 const DEVICES = '__DEVICES__' === '1';
 const SOURCES = [
-  {name: 'Умное кольцо Sber', note: 'сон, стресс, шаги', ready: DEVICES, ring: DEVICES},
-  {name: 'Еда числами', note: 'КБЖУ за день', ready: DEVICES, food: DEVICES},
-  {name: 'Погода и город', note: 'давление, температура, облачность', weather: true},
-  {name: 'Apple Health', note: 'разбор написан, подключение в программе', ready: false},
-  {name: 'Health Connect', note: 'для Android, тот же формат', ready: false},
-  {name: 'Календарь', note: 'встречи и перелёты как факторы', ready: false}
+  {name: 'Умное кольцо Sber', note: 'Сон, пульс, стресс и шаги без ручного ввода.', live: DEVICES},
+  {name: 'Apple Health и Health Connect', note: 'Данные с часов и телефона.'},
+  {name: 'Календарь', note: 'Встречи и поездки как события дня.'},
+  {name: 'Еда с калориями', note: 'Из приложений подсчёта калорий.', live: DEVICES}
 ];
 
 // Погода подключается городом, а не кнопкой: пока города нет, источник и
 // правда не работает, и показывать его подключённым было бы неправдой.
 let city = '';
+// Человек нажал «Сменить»: поле города открыто, хотя город уже есть.
+let cityEditing = false;
 
 function drawSources(){
-  // Работающие источники стоят в разметке своими строками с настройками.
-  // Скрипт рисует только то, чего пока нет: список коротких строк внизу.
-  const box = document.getElementById('sources');
-  box.innerHTML = '';
   document.getElementById('src-ring').hidden = !DEVICES;
   document.getElementById('src-food').hidden = !DEVICES;
-  const head = document.createElement('div');
-  head.className = 'h';
-  head.textContent = 'Пока не подключено';
-  box.appendChild(head);
+  const box = document.getElementById('soon');
+  box.innerHTML = '';
   for(const source of SOURCES){
-    if(source.ready || source.weather || source.food || source.ring) continue;
-    const card = document.createElement('div');
-    card.className = 'card';
+    if(source.live) continue;
+    const row = document.createElement('div');
+    row.className = 'line muted';
+    const text = document.createElement('div');
+    text.className = 't';
     const name = document.createElement('b');
     name.textContent = source.name;
-    card.append(name);
-    box.appendChild(card);
+    const note = document.createElement('p');
+    note.textContent = source.note;
+    text.append(name, note);
+    const state = document.createElement('div');
+    state.className = 'act';
+    const word = document.createElement('span');
+    word.className = 'st';
+    word.textContent = 'в разработке';
+    state.appendChild(word);
+    row.append(text, state);
+    box.appendChild(row);
   }
   drawWeatherRow();
 }
@@ -676,18 +771,23 @@ async function showWeather(){
   box.hidden = false;
 }
 
-// Строка погоды живёт в разметке, а состояние у неё меняется: пока города нет,
-// источник и правда не работает, и показывать его подключённым было бы неправдой.
+// Строка погоды живёт в разметке, а состояние у неё меняется: без города -
+// поле и «Подключить», с городом - сам город и «Сменить».
 function drawWeatherRow(){
-  const row = document.getElementById('src-weather');
-  if(!row) return;
-  const st = row.querySelector('.st');
-  const sub = document.getElementById('city-name');
-  st.textContent = city ? 'подключено' : 'не подключено';
-  st.classList.toggle('on', !!city);
-  sub.textContent = city || 'город не назван';
-  const note = document.getElementById('city-note');
-  if(note) note.hidden = !!city;
+  const editing = !city || cityEditing;
+  document.getElementById('city-edit').hidden = !editing;
+  document.getElementById('city-on').hidden = editing;
+  document.getElementById('city-name').textContent = city;
+  // Сменить на пустое - значит отключить: кнопка так и называется
+  document.getElementById('city-btn').textContent = city ? 'Сохранить' : 'Подключить';
+}
+
+function editCity(){
+  cityEditing = true;
+  drawWeatherRow();
+  const field = document.getElementById('city');
+  field.value = city;
+  field.focus();
 }
 
 async function setCity(){
@@ -695,12 +795,14 @@ async function setCity(){
   try {
     const answer = await talk('/city', {city: document.getElementById('city').value});
     city = answer.city;
+    cityEditing = false;
     // Не подтвердился город - это ещё не значит, что он неправильный: могло
     // не быть связи. Говорим ровно то, что знаем.
     note.textContent = !city ? 'Города нет - погода в дневнике не участвует.'
       : (answer.known ? 'Погода берётся для города «' + city + '».'
                       : 'Город записан, но погоду по нему сейчас не достать: '
                         + 'проверьте название или связь с интернетом.');
+    note.hidden = false;
     drawSources();
     showWeather();
   } catch(e) {
@@ -715,9 +817,10 @@ async function sendFood(fromCsv){
   const table = document.getElementById('food-csv');
   const fields = {kcal: 'калории', protein: 'белки', fat: 'жиры', carbs: 'углеводы'};
   const body = {since: lastSeq};
+  const say = text => { note.textContent = text; note.hidden = false; };
 
   if(fromCsv){
-    if(!table.value.trim()){ note.textContent = 'Вставьте выгрузку в поле выше.'; return; }
+    if(!table.value.trim()){ say('Вставьте выгрузку в поле выше.'); return; }
     body.csv = table.value;
   } else {
     let filled = false;
@@ -727,20 +830,20 @@ async function sendFood(fromCsv){
       body[fields[id]] = +value;
       filled = true;
     }
-    if(!filled){ note.textContent = 'Впишите хотя бы калории.'; return; }
+    if(!filled){ say('Впишите хотя бы калории.'); return; }
   }
 
   try {
     const answer = await talk('/food', body);
-    if(!answer.ok){ note.textContent = answer.error; return; }
+    if(!answer.ok){ say(answer.error); return; }
     draw(answer);
-    note.textContent = 'Записал ' + answer.told
-      + '. Дальше эти факторы участвуют в поиске связей наравне с привычками.';
+    say('Записал ' + answer.told
+      + '. Дальше эти факторы участвуют в поиске связей наравне с привычками.');
     if(fromCsv) table.value = '';
     else for(const id in fields) document.getElementById(id).value = '';
     tab('chat');
   } catch(e) {
-    note.textContent = 'Не записалось: ' + e.message;
+    say('Не записалось: ' + e.message);
   }
 }
 
@@ -754,7 +857,7 @@ function drawPeriods(){
   for(const period of PERIODS){
     const option = document.createElement('option');
     option.value = period.days;
-    option.textContent = 'дневник за ' + period.name;
+    option.textContent = period.name;
     option.selected = period.days === DEFAULT_DAYS;
     box.appendChild(option);
   }
@@ -986,23 +1089,131 @@ async function send(){
   field.focus();
 }
 
-// Выводы за полгода считаются несколько секунд. Без этой пометки страница
-// просто молчала, и было непонятно, нажалась кнопка или нет. Выводы ложатся в
-// ленту, поэтому, посчитав, открываем разговор - иначе их никто не увидит.
-async function summary(){
-  const button = document.getElementById('sum');
-  const note = document.getElementById('counting');
-  button.disabled = true;
-  note.hidden = false;
-  try {
-    draw(await talk('/summary', {days: +document.getElementById('days').value,
-                                 since: lastSeq}));
-    tab('chat');
-  } catch(e) {
-    trouble('Выводы не посчитались: ' + e.message);
+// ── Что Мира заметила ─────────────────────────────────────────────────────
+// Свой дневник и пример спрашиваем отдельно: пример за полгода считается
+// секунд семь, и свой дневник не должен ждать чужие цифры.
+let ownAsked = 0, demoAsked = 0;
+
+function plural(count, one, few, many){
+  const tens = count % 100, last = count % 10;
+  if(tens >= 11 && tens <= 14) return many;
+  return last === 1 ? one : (last >= 2 && last <= 4 ? few : many);
+}
+
+function el(tag, className, text){
+  const node = document.createElement(tag);
+  if(className) node.className = className;
+  if(text !== undefined) node.textContent = text;
+  return node;
+}
+
+// Карточка находки. Всё из ответа сервера кладём через textContent: в
+// названиях факторов - слова человека.
+function finding(item){
+  const card = el('div', 'find' + (item.weak ? ' weak' : ''));
+  const head = el('div', 'h');
+  head.append(el('b', '', item.title), el('span', 'tag', item.tag));
+  card.append(head, el('p', '', item.text), el('p', 'basis', item.basis));
+  // План проверки - только по тому, что человек решает сам; раскрывается по
+  // кнопке, чтобы список находок не превращался в простыню
+  if((item.plan || []).length){
+    const button = el('button', 'ghost', 'Проверить на себе');
+    const plan = el('ol');
+    plan.hidden = true;
+    for(const step of item.plan) plan.appendChild(el('li', '', step));
+    button.onclick = () => {
+      plan.hidden = !plan.hidden;
+      button.textContent = plan.hidden ? 'Проверить на себе' : 'Скрыть план';
+    };
+    card.append(button, plan);
   }
-  button.disabled = false;
-  note.hidden = true;
+  return card;
+}
+
+// Строка «пока рано» с полоской: сколько дней записано из нужных.
+function waiting(title, text, have, need){
+  const row = el('div', 'line');
+  const body = el('div', 't');
+  body.append(el('b', '', title), el('p', '', text));
+  if(need){
+    const bar = el('div', 'prog');
+    const fill = el('span');
+    fill.style.width = Math.min(100, Math.round(100 * have / need)) + '%';
+    bar.appendChild(fill);
+    body.append(bar, el('p', '', have + ' из ' + need + ' ' + plural(need, 'дня', 'дней', 'дней')));
+  }
+  const act = el('div', 'act');
+  const write = el('button', '', 'Написать Мире');
+  write.onclick = writeToMira;
+  act.appendChild(write);
+  row.append(body, act);
+  return row;
+}
+
+function drawOwn(answer){
+  const box = document.getElementById('own');
+  box.innerHTML = '';
+  const days = answer.days, first = answer.first, sure = answer.sure;
+  const written = (days === 1 ? 'Записан ' : 'Записано ') + days + ' '
+    + plural(days, 'день', 'дня', 'дней');
+  if(answer.findings.length){
+    for(const item of answer.findings) box.appendChild(finding(item));
+    return;
+  }
+  if(days < first){
+    const left = first - days;
+    box.appendChild(waiting('Пока рано для выводов',
+      written + ' из ' + first + ', нужных для первых сравнений. Пишите хотя бы раз в день - '
+      + 'через ' + left + ' ' + plural(left, 'день', 'дня', 'дней')
+      + ' Мире будет что сравнивать.', days, first));
+    return;
+  }
+  box.appendChild(waiting('Связей пока не видно',
+    written + '. Мира сравнивает дни с привычкой и без неё и показывает связь, когда '
+    + 'разница повторяется. Надёжный вывод - от ' + sure / 2 + ' дней с привычкой и '
+    + sure / 2 + ' без.', days, days < sure ? sure : 0));
+}
+
+async function insights(){
+  const asked = ++ownAsked;
+  try {
+    const answer = await talk('/insights');
+    if(asked === ownAsked) drawOwn(answer);
+  } catch(e) {
+    const box = document.getElementById('own');
+    box.innerHTML = '';
+    box.appendChild(el('p', 'warn', 'Выводы не посчитались: ' + e.message));
+  }
+}
+
+async function example(){
+  const asked = ++demoAsked;
+  const box = document.getElementById('demo');
+  const days = +document.getElementById('days').value;
+  box.innerHTML = '';
+  box.appendChild(el('p', 'hint', 'Считаю выводы придуманного дневника - это несколько секунд.'));
+  try {
+    const answer = await talk('/insights/example?days=' + days);
+    // Пока считалось, человек мог выбрать другой срок: старый ответ не рисуем
+    if(asked !== demoAsked) return;
+    box.innerHTML = '';
+    if(!answer.findings.length)
+      box.appendChild(el('p', 'hint', 'За ' + answer.period + ' ничего надёжного не набралось. '
+        + 'Это тоже ответ: случайных совпадений Мира не показывает.'));
+    for(const item of answer.findings) box.appendChild(finding(item));
+    if(answer.dropped.length)
+      box.appendChild(el('p', 'hint', 'Связи с ' + answer.dropped.map(f => '«' + f + '»').join(', ')
+        + ' тоже выглядели убедительно, но объясняются другими факторами - их Мира отсеяла.'));
+  } catch(e) {
+    if(asked !== demoAsked) return;
+    box.innerHTML = '';
+    box.appendChild(el('p', 'warn', 'Пример не посчитался: ' + e.message));
+  }
+}
+
+function writeToMira(){
+  tab('chat');
+  document.getElementById('text').focus();
 }
 
 // Выгрузка дневника. Забираем файл обычным fetch и сохраняем сами, а не
@@ -1028,7 +1239,7 @@ async function save(kind){
 }
 
 async function reset(){
-  // На сервере кнопка зовётся «Очистить ленту», а сегодняшние записи уходят
+  // На сервере ссылка зовётся «Очистить ленту», а сегодняшние записи уходят
   // вместе с лентой - об этом надо сказать до нажатия, а не после.
   if(serverDrawn && !confirm('Лента разговора и сегодняшние записи очистятся. '
                              + 'Прошлые дни останутся.')) return;
@@ -1159,11 +1370,11 @@ function drawChats(){
   box.innerHTML = '';
   for(const chat of (telegram.chats || [])){
     const row = document.createElement('div');
-    row.className = 'card chat';
+    row.className = 'chat-row';
     const name = document.createElement('b');
     name.textContent = 'чат ' + chat;
     const button = document.createElement('button');
-    button.className = 'small ghost';
+    button.className = 'ghost small-btn';
     button.textContent = 'Отвязать';
     button.onclick = () => unlink(chat);
     row.append(name, button);
@@ -1204,10 +1415,13 @@ function drawAccount(state){
   const account = state.account || {};
   const name = account.username;
   document.getElementById('account-name').textContent = name ? ': @' + name : '';
+  // Строка Telegram - если бот у сервиса есть или человек уже пришёл оттуда
+  document.getElementById('tg-row').hidden = !account.telegram && !account.bot_on;
   document.getElementById('account-tg').hidden = !account.telegram;
-  document.getElementById('tg-link-box').hidden = account.telegram || !account.bot_on;
+  document.getElementById('tg-link-btn').hidden = !!account.telegram;
+  if(account.telegram) document.getElementById('tg-link-note').hidden = true;
   hasCode = !!account.has_code;
-  document.getElementById('code-btn').textContent = hasCode ? 'Сменить код' : 'Показать код';
+  document.getElementById('code-btn').textContent = hasCode ? 'Сменить код' : 'Получить код';
   const who = document.getElementById('whoami');
   who.textContent = (name ? 'Вы вошли как @' + name
     : account.telegram ? 'Вы вошли через Telegram' : 'Вы вошли по личному коду')
@@ -1221,15 +1435,8 @@ function drawAccount(state){
     document.getElementById('tg-panel').hidden = true;
     document.getElementById('account').hidden = false;
     document.querySelector('.tabs button[data-tab=telegram]').textContent = 'Мои данные';
-    if(document.body.dataset.tab === 'telegram') tab('telegram');
-    // Выгрузка переехала в «Мои данные», две одинаковые кнопки ни к чему
-    document.getElementById('export-row').hidden = true;
-    document.getElementById('export-note').hidden = true;
-    // Придуманный дневник один на всех: человек должен видеть, что это не его записи
-    document.getElementById('sum').textContent = 'Пример на придуманных данных';
-    document.getElementById('demo-note').textContent =
-      'Пример, не ваши данные: придуманный дневник, связи в нём заложены заранее.';
-    document.getElementById('reset').textContent = 'Очистить ленту разговора';
+    document.getElementById('privacy-link').hidden = false;
+    document.getElementById('reset').textContent = 'Очистить ленту';
   }
   return true;
 }
@@ -1270,6 +1477,13 @@ async function personalCode(){
   document.getElementById('code-warn').hidden = false;
   hasCode = true;
   document.getElementById('code-btn').textContent = 'Сменить код';
+}
+
+// Удаление в два шага: кнопка открывает поле для слова УДАЛИТЬ.
+function openErase(){
+  document.getElementById('erase-box').hidden = false;
+  document.getElementById('erase-open').hidden = true;
+  document.getElementById('erase-word').focus();
 }
 
 async function linkTelegram(){
@@ -1374,9 +1588,12 @@ function tab(name){
     const chosen = button.dataset.tab === name;
     button.classList.toggle('on', chosen);
     button.setAttribute('aria-selected', chosen ? 'true' : 'false');
-    // Заголовок раздела - то же слово, что на кнопке: в режиме server
-    // «Telegram» на кнопке становится «Мои данные», и заголовок вслед за ним.
-    if(chosen) document.getElementById('view-title').textContent = button.textContent;
+  }
+  // Выводы спрашиваем при каждом открытии раздела: за время разговора их
+  // могло прибавиться. Пример считается один раз - он не меняется.
+  if(name === 'insights'){
+    insights();
+    if(!document.getElementById('demo').childElementCount) example();
   }
   // У скрытой ленты высота нулевая, и прокрутка вниз при показе сообщения не
   // сработала: доматываем её здесь, когда лента снова на экране.

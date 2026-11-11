@@ -113,6 +113,7 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "LOGIN_LIMIT", limits.Limiter(10, 60))
     monkeypatch.setattr(server, "WEATHER_LIMIT", limits.Limiter(10, 3600))
     monkeypatch.setattr(server, "SUMMARY_LIMIT", limits.Limiter(10, 60))
+    monkeypatch.setattr(server, "INSIGHTS_LIMIT", limits.Limiter(30, 60))
     monkeypatch.setattr(server, "FOOD_LIMIT", limits.Limiter(10, 60))
     monkeypatch.setattr(server, "CITY_LIMIT", limits.Limiter(10, 3600))
     monkeypatch.setattr(server, "CODE_LIMIT", limits.Limiter(10, 60))
@@ -994,4 +995,4 @@ def test_logout_everywhere_closes_every_session(service):
 def test_page_says_who_is_logged_in(service):
     page = service.request("GET", "/")[2]
     assert 'id="whoami"' in page and "Вы вошли как @" in page
-    assert "Выйти на всех устройствах" in page
+    assert "Выйти везде" in page

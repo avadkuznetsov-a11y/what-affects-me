@@ -1,0 +1,33 @@
+<html><head><meta charset=utf-8><style>
+@font-face{font-family:Golos;src:url(../../web/fonts/golos-text-cyrillic-wght-normal.woff2) format('woff2');font-weight:400 900}
+*{box-sizing:border-box}body{margin:0;font-family:Golos,sans-serif;width:1280px;height:800px;overflow:hidden;display:flex;background:#F3F1EC;color:#1d2433}
+.side{width:260px;background:#152C55;color:#dfe4f0;padding:28px 22px;display:flex;flex-direction:column;gap:6px}
+.logo{display:flex;gap:12px;align-items:center;margin-bottom:30px}.logo img{width:40px;border-radius:50%}.logo b{font-size:24px;color:#fff;display:block}.logo span{font-size:13px;color:#9aa6c2}
+.side a{padding:11px 12px;border-radius:8px;font-size:16px}.side a.on{background:#24406f;color:#fff;font-weight:600}
+.side small{margin-top:auto;color:#9aa6c2;font-size:13px;line-height:1.5}
+main{flex:1;padding:34px 56px;overflow:hidden}
+h1{font-size:28px;margin:0 0 6px}.sub{color:#6f6a60;font-size:15px;margin:0 0 26px;max-width:640px;line-height:1.5}
+.sec{max-width:720px;margin-bottom:26px}.sec h2{font-size:15px;font-weight:600;color:#6f6a60;margin:0 0 10px}
+.row{background:#fff;border:1px solid #e6e1d6;border-radius:12px;padding:18px 20px;display:flex;align-items:center;gap:18px;margin-bottom:8px}
+.row .t{flex:1}.row b{font-size:16px;display:block;margin-bottom:4px}.row p{margin:0;color:#6b7180;font-size:14px;line-height:1.5}
+.btn{border:1px solid #d8d2c4;background:#fff;border-radius:8px;padding:9px 16px;font:600 14px Golos;color:#152C55;white-space:nowrap}
+.btn.p{background:#152C55;color:#fff;border-color:#152C55}.btn.d{color:#b42318;border-color:#efc9c4}
+.st{font-size:13px;color:#8b8579;white-space:nowrap}.st.on{color:#1f6f4a;font-weight:600}
+.in{border:1px solid #d8d2c4;border-radius:8px;padding:9px 12px;font:14px Golos;color:#a39c8f;width:220px;background:#fdfcf9}
+.muted{opacity:.62}.link{color:#152C55;font-size:14px;text-decoration:underline;text-underline-offset:3px}
+.prog{height:6px;background:#e6e1d6;border-radius:3px;margin:12px 0 4px;max-width:420px}.prog span{display:block;height:6px;width:17%;background:#152C55;border-radius:3px}
+.find{background:#fff;border:1px solid #e6e1d6;border-radius:12px;padding:20px 22px;margin-bottom:10px;max-width:720px}
+.find .h{display:flex;justify-content:space-between;align-items:baseline;gap:16px}.find b{font-size:17px}.tag{font-size:12px;color:#6b7180;border:1px solid #e1dbcd;border-radius:10px;padding:3px 9px;white-space:nowrap}
+.find p{margin:8px 0 12px;color:#4b5160;font-size:15px;line-height:1.55}
+</style></head><body>
+<div class=side><div class=logo><img src=../mira-mark.png><div><b>Мира</b><span>дневник, который ищет причины</span></div></div>
+<a>Разговор</a>
+<a class=on>Что Мира заметила</a>
+<a>Источники</a>
+<a>Мои данные</a>
+<small>Вы вошли по личному коду.<br>Записи видите только вы.</small></div>
+<main><h1>Что Мира заметила</h1><p class=sub>Здесь появляются связи между тем, что вы делаете, и тем, как себя чувствуете. Мира показывает только то, что повторилось несколько раз.</p>
+<div class=sec><h2>Ваш дневник</h2><div class=row><div class=t><b>Пока рано для выводов</b><p>Записан 1 день из 6, нужных для первых сравнений. Пишите хотя бы раз в день — через 5 дней здесь появятся первые находки.</p><div class=prog><span></span></div><p style="font-size:13px">1 из 6 дней</p></div><button class="btn p">Написать Мире</button></div></div>
+<div class=sec><h2>Так это будет выглядеть: пример на придуманном дневнике</h2>
+<div class="find"><div class=h><b>Кофе после трёх → сон хуже</b><span class=tag>повторилось 9 раз из 12</span></div><p>В дни, когда последняя чашка была после 15:00, сон на следующую ночь был в среднем на 1,7 балла ниже.</p><button class=btn>Проверить на себе: неделя без вечернего кофе</button></div>
+<div class="find muted"><div class=h><b>Головная боль чаще по понедельникам</b><span class=tag>пока догадка</span></div><p>Совпало 3 раза — мало, чтобы утверждать. Ещё неделя записей покажет.</p></div></div></main></body></html>

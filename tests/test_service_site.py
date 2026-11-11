@@ -555,3 +555,40 @@ def test_server_mode_starts_with_ring_and_food_off(tmp_path):
     out = subprocess.run([sys.executable, "-c", "import web.server as s; print(s.DEVICES)"],
                          env=env, capture_output=True, text=True, cwd=Path(__file__).parent.parent)
     assert out.stdout.strip() == "False", out.stderr
+
+
+# ── раздел «Что Мира заметила» ───────────────────────────────────────────
+
+def test_insights_are_the_persons_own_and_need_login(service):
+    """
+    /insights - только своему: без входа 401, у двух людей свои счётчики дней.
+    Порог первых сравнений - из статистики, а не числом в странице.
+    """
+    assert service.request("GET", "/insights")[0] == 401
+    alice, _ = newcomer(service, ip="10.0.0.1")
+    bob, _ = newcomer(service, ip="10.0.0.2")
+    assert alice.post("/say", {"text": "Пил кофе, спал часов пять"})[0] == 200
+    code, _, body = alice.get("/insights")
+    assert code == 200, body
+    mine = json.loads(body)
+    assert mine["days"] == 1 and mine["findings"] == []
+    assert mine["first"] == 2 * server.OBSERVATION_MIN_DAYS
+    assert mine["sure"] == 2 * server.MIN_DAYS_PER_GROUP
+    assert json.loads(bob.get("/insights")[2])["days"] == 0
+
+
+def test_insights_without_consent_are_closed(service):
+    who, _ = newcomer(service, consent=False)
+    assert who.get("/insights")[0] == 403
+
+
+def test_example_takes_only_listed_periods(service, monkeypatch):
+    """Срок не из списка не считается: иначе перебором сроков забивается кэш."""
+    asked = []
+    monkeypatch.setattr(server, "_diary", lambda days: asked.append(days) or (None, []))
+    who, _ = newcomer(service)
+    code, _, body = who.get("/insights/example?days=21")
+    assert code == 200 and json.loads(body)["period"] == "3 недели"
+    who.get("/insights/example?days=200")
+    who.get("/insights/example?days=abc")
+    assert asked == [21, server.DEFAULT_DAYS, server.DEFAULT_DAYS]

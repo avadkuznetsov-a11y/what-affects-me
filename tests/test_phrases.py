@@ -3,7 +3,8 @@ from demo.generate import build
 from wam.derive import derive_factors
 from conftest import FAST_PERMUTATIONS
 from wam.insights import find_links
-from wam.phrases import say, basis, next_step, period, days_count, _score
+from wam.phrases import (say, basis, next_step, period, days_count, _score,
+                         headline, guess, compared)
 
 
 def _link(factor, metric):
@@ -47,3 +48,13 @@ def test_period_reads_like_speech():
     assert period(21) == "21 день" and period(45) == "45 дней"
     assert period(90) == "3 месяца" and period(150) == "5 месяцев"
     assert period(180) == "полгода" and period(365) == "год"
+
+
+def test_finding_on_the_page_reads_short():
+    """Карточка находки: заголовок «X → Y», догадка без уверенного тона, дни числом."""
+    link = _link("кофе", "качество сна")
+    assert headline(link) == "Кофе → спится хуже"
+    assert "заметно" not in guess(link) and "дней пока мало" in guess(link)
+    assert guess(link).startswith("После кофе")
+    assert compared(link).startswith(f"Сравнили {days_count(link.days_with)} с этим и "
+                                     f"{link.days_without} без")

@@ -44,10 +44,12 @@ from wam.derive import derive_factors
 from wam.diary import DiaryStore
 from wam import storage
 from wam.experiments import Experiment, can_try, evaluate
-from wam.insights import find_links
+from wam.insights import MIN_DAYS_PER_GROUP, OBSERVATION_MIN_DAYS, find_links
 from wam.llm import available_engine
-from wam.phrases import basis, days_count, next_step, period, say
+from wam.phrases import (basis, compared, days_count, guess, headline, next_step, period,
+                         say)
 from wam.questions import day_name
+from wam.today import HINT_EFFECT, HINT_P
 
 # Режим читаем один раз при запуске. Неизвестное слово - ошибка сразу: молча
 # поднять сервис для многих людей в режиме «один человек без входа» значит
@@ -182,7 +184,7 @@ def page() -> bytes:
     # страховка дешевле разбирательства, если список станет настраиваемым.
     periods = json.dumps([{"days": days, "name": name} for days, name in PERIODS],
                          ensure_ascii=False).replace("</", "<\\/")
-    html = (html.replace("__ENGINE__", ENGINE_NAME)
+    html = (html.replace("__ENGINE__", engine_note())
                 .replace("__PERIODS__", periods)
                 .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS))
                 .replace("__BOT__", BOT_NAME)
@@ -190,6 +192,19 @@ def page() -> bytes:
                 # Есть ли у сервиса бот: без него страница не зовёт в Telegram
                 .replace("__TG__", "1" if SERVICE_BOT is not None else ""))
     return html.encode("utf-8")
+
+
+def engine_note() -> str:
+    """
+    Кто разбирает речь - одной фразой внизу «Моих данных». Про Яндекс говорим
+    и то, что запросы у него не остаются: заголовок x-data-logging-enabled в
+    wam/llm.py. Про другие сервисы такого не обещаем - не проверяли.
+    """
+    if ENGINE_NAME == "YandexGPT":
+        return "Речь разбирает YandexGPT, без сохранения у Яндекса."
+    if ENGINE_NAME == "правила":
+        return "Речь разбирают правила прямо в программе, без внешних сервисов."
+    return f"Речь разбирает {html.escape(ENGINE_NAME)}."
 
 
 # Шрифты страницы: отдаём только эти файлы и только по точному имени - путь
@@ -661,6 +676,67 @@ def _summary(days: int) -> list[dict]:
     return messages
 
 
+# Сколько дней нужно, чтобы было что сравнивать, и сколько - для настоящего
+# вывода. Числа берём из порогов статистики, а не пишем на глаз: первые
+# сравнения (догадки) идут от трёх дней с привычкой и трёх без, вывод - от
+# семи и семи. Поменяется порог - страница скажет новое число сама.
+FIRST_DAYS = 2 * OBSERVATION_MIN_DAYS
+SURE_DAYS = 2 * MIN_DAYS_PER_GROUP
+
+# Догадок на странице не больше трёх: длинный список полудогадок учит не
+# верить и настоящим выводам (то же правило в today.py - там одна за раз).
+MAX_GUESSES = 3
+
+
+def _finding(link, weak: bool = False, own: bool = True) -> dict:
+    """
+    Одна находка для карточки на странице. Метка силы - уровень из статистики
+    (Link.strength), а не наше впечатление; у догадки - «пока догадка».
+    План проверки на себе - только по тому, что человек решает сам (can_try).
+    """
+    plan = (Experiment.from_link(link, start=date.today(), days=14).plan
+            if can_try(link.factor) else [])
+    return {"title": headline(link),
+            "text": guess(link) if weak else say(link),
+            "basis": compared(link, own),
+            "tag": "пока догадка" if weak else link.strength,
+            "weak": weak, "plan": plan}
+
+
+def _insights(key: str) -> dict:
+    """
+    Что Мира заметила в дневнике самого человека: сколько дней записано и
+    какие связи нашлись. Связи - те же, что идут в разговор (Diary.links и
+    Diary.hints, посчитанные один раз на версию дневника), так что страница и
+    разговор не могут друг другу противоречить.
+    """
+    diary = STORE.get(key)
+    links, hints = diary.links(), diary.hints()
+    with diary.lock:
+        recorded = sum(1 for record in diary.timeline.days if record.facts)
+    sure = [l for l in links if l.strength in ("подтверждено", "вероятная связь")]
+    # Те же пороги, по которым разговор решает, говорить ли про наблюдение
+    guesses = sorted((l for l in hints if not l.confounder
+                      and abs(l.effect) >= HINT_EFFECT and l.p_value <= HINT_P),
+                     key=lambda l: (l.p_value, -abs(l.effect)))
+    return {"days": recorded, "first": FIRST_DAYS, "sure": SURE_DAYS,
+            "findings": [_finding(l) for l in sure]
+                        + [_finding(l, weak=True) for l in guesses[:MAX_GUESSES]]}
+
+
+def _example(days: int) -> dict:
+    """
+    Выводы придуманного дневника - образец того, как будут выглядеть свои.
+    Тот же отбор, что в _summary: отсеянное другими факторами - одной строкой.
+    """
+    _, links = _diary(days)
+    real = [l for l in links if l.strength != "наблюдение" and not l.confounder]
+    dropped = [l for l in links if l.strength != "наблюдение" and l.confounder]
+    return {"days": days, "period": period_name(days),
+            "findings": [_finding(l, own=False) for l in real],
+            "dropped": list(dict.fromkeys(l.factor for l in dropped))}
+
+
 def _export(key: str, kind: str) -> tuple[bytes, str, str]:
     """
     Дневник человека одним файлом: тело, тип и имя файла.
@@ -728,6 +804,9 @@ WEATHER_LIMIT = limits.Limiter(10, 60 * 60)
 # Человеку на странице столько не нужно никогда; столько нужно только тому,
 # кто хочет положить сервис.
 SUMMARY_LIMIT = limits.Limiter(10, 60)
+# Раздел «Что Мира заметила» спрашивает выводы при каждом открытии, поэтому
+# потолок выше, чем у кнопки: человек ходит по разделам туда-сюда.
+INSIGHTS_LIMIT = limits.Limiter(30, 60)
 FOOD_LIMIT = limits.Limiter(10, 60)
 CITY_LIMIT = limits.Limiter(10, 60 * 60)
 # Вход по личному коду: 10 попыток в минуту с адреса и общий потолок на всех
@@ -936,6 +1015,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/state":
             self._state()
+        elif path in ("/insights", "/insights/example"):
+            # Только читает и ничего не меняет, поэтому GET. Считать связи
+            # дорого, отсюда потолок на человека.
+            if not self._allowed(INSIGHTS_LIMIT, "Выводы спрашивали слишком часто, "
+                                                 "подождите минуту.", 60):
+                return
+            if path == "/insights":
+                self._json(_insights(self._user_key()))
+            else:
+                # Срок - только из списка: любой другой занял бы место в кэше
+                # и семь секунд счёта, а чужой запрос мог бы перебрать их все.
+                days = _int_param(self.path, "days", DEFAULT_DAYS)
+                self._json(_example(days if days in dict(PERIODS) else DEFAULT_DAYS))
         elif path == "/export":
             # Выгрузка ничего не меняет, поэтому GET: страница забирает её
             # обычным fetch и сохраняет файл сама. Чужому сайту она не достанется
