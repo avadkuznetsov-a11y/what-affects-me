@@ -752,6 +752,15 @@ def test_fonts_are_served_from_own_address(service):
         assert "Open Font License" in (server.FONTS_DIR / f"OFL-{family}.txt").read_text()
 
 
+def test_mark_is_served_without_login(service):
+    """Знак Миры стоит и на экране входа: отдаётся без сессии, картинкой, с кэшем."""
+    page = service.request("GET", "/")[2]
+    assert 'src="/mira-mark.png"' in page
+    code, headers, _ = service.request("GET", "/mira-mark.png")
+    assert code == 200 and headers["Content-Type"] == "image/png"
+    assert headers["Cache-Control"].startswith("public")
+
+
 def test_stop_saves_diaries_and_releases_the_bot(tmp_path, monkeypatch):
     """
     SIGTERM: фоновые потоки получают сигнал, бот подтверждает Telegram

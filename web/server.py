@@ -197,6 +197,10 @@ def page() -> bytes:
 FONTS_DIR = Path(__file__).parent / "fonts"
 FONTS = {f"/fonts/{path.name}": path for path in FONTS_DIR.glob("*.woff2")}
 
+# Знак Миры в боковой панели. Отдельный файл, а не картинка внутри html: страница
+# собирается на каждый запрос, и двадцать килобайт base64 ехали бы каждый раз.
+MARK = Path(__file__).parent / "mira-mark.png"
+
 
 # ── состояние разговора ───────────────────────────────────────────────────
 
@@ -700,7 +704,7 @@ def _short_basis(link) -> str:
 # Без входа в режиме server открыто только это: сама страница (она и есть
 # экран входа), обмен ссылки от бота на сессию, вход по личному коду и
 # «Начать без Telegram». Всё остальное - 401.
-OPEN_GET = ("/", "/login", "/link", "/privacy", "/healthz") + tuple(FONTS)
+OPEN_GET = ("/", "/login", "/link", "/privacy", "/healthz", "/mira-mark.png") + tuple(FONTS)
 OPEN_POST = ("/auth/login", "/auth/code", "/auth/new")
 
 # Что можно без согласия: увидеть экран согласия, согласиться, выйти,
@@ -922,6 +926,11 @@ class Handler(BaseHTTPRequestHandler):
             # только с выкладкой, неделя - разумный срок.
             self.cache = "public, max-age=604800"
             self._send(FONTS[path].read_bytes(), "font/woff2")
+            return
+        if path == "/mira-mark.png":
+            # Знак виден и на экране входа, поэтому открыт без входа, как шрифты
+            self.cache = "public, max-age=604800"
+            self._send(MARK.read_bytes(), "image/png")
             return
         if not self._admit() or not self._consented(path):
             return

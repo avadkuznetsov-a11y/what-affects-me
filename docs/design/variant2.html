@@ -1,0 +1,29 @@
+<!-- Макет «Вариант 2 · Мессенджер с меню слева», выбран владельцем 11.11.2026. Только образец вида, не рабочий код. -->
+<html><head><meta charset=utf-8><style>
+@font-face{font-family:Golos;src:url(../../web/fonts/golos-text-cyrillic-wght-normal.woff2) format('woff2');font-weight:400 900}
+*{box-sizing:border-box}body{margin:0;font-family:Golos,sans-serif;width:1280px;height:800px;overflow:hidden}
+body{background:#F3F1EC;color:#1d2433;display:flex}
+.side{width:260px;background:#152C55;color:#dfe4f0;padding:30px 26px;display:flex;flex-direction:column;gap:6px}
+.side .logo{display:flex;align-items:center;gap:12px;margin-bottom:34px}.side img{width:38px;border-radius:50%;box-shadow:0 0 0 2px #2b4373}
+.side b{font-size:22px;color:#fff}.side a{padding:10px 12px;border-radius:8px;font-size:15px}.side a.on{background:#24406f;color:#fff}
+.side small{margin-top:auto;color:#9aa6c2;font-size:13px;line-height:1.5}
+.chat{flex:1;display:flex;flex-direction:column;padding:28px 0}
+.top{padding:0 56px 18px;border-bottom:1px solid #e2ddd2;display:flex;justify-content:space-between;align-items:baseline}
+.top h2{margin:0;font-size:24px}.top span{color:#8b8579;font-size:14px}
+.feed{flex:1;padding:28px 56px;display:flex;flex-direction:column;gap:14px}
+.m{max-width:560px;padding:14px 18px;border-radius:14px;font-size:16px;line-height:1.5}
+.m.u{align-self:flex-end;background:#152C55;color:#fff;border-bottom-right-radius:4px}
+.m.r{background:#fff;border:1px solid #e6e1d6;border-bottom-left-radius:4px}
+.m.r small{display:block;color:#6b7180;font-size:14px;margin-top:6px}
+.chips{display:flex;gap:8px;margin-top:4px}.chips span{border:1px solid #d9d3c5;border-radius:16px;padding:6px 12px;font-size:14px;background:#fff}
+.in{margin:0 56px;display:flex;gap:10px;background:#fff;border:1px solid #e2ddd2;border-radius:12px;padding:10px}
+.in div{flex:1;color:#a39c8f;padding:10px}.in button{background:#152C55;color:#fff;border:0;border-radius:8px;padding:0 22px;font:600 15px Golos}
+</style></head><body>
+<div class=side><div class=logo><img src=../mira-mark.png><b>Мира</b></div><a class=on>Разговор</a><a>Что Мира заметила</a><a>Источники</a><a>Мои данные</a><small>Вы вошли по личному коду.<br>Записи видите только вы.</small></div>
+<div class=chat><div class=top><h2>Сегодня</h2><span>среда, 11 ноября</span></div>
+<div class=feed>
+<div class="m r">Привет! Расскажите, как прошёл день — обычными словами.</div>
+<div class="m u">Спал часов пять, утром два кофе, голова болит с обеда</div>
+<div class="m r">Записала: сон 4 из 10, кофе утром, головная боль 6 из 10.<small>Во сколько была последняя чашка?</small><div class=chips><span>до 12</span><span>12–15</span><span>после 15</span></div></div>
+</div><div class=in><div>Расскажите, как прошёл день</div><button>Отправить</button></div></div>
+</body></html>
