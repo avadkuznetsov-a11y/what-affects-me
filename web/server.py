@@ -95,6 +95,10 @@ ACCOUNTS = Accounts(STORE.storage) if STORE.storage is not None else None
 # запуске у Telegram (getMe), в режиме local не нужно.
 BOT_NAME = ""
 
+# Бот сервиса в режиме server. Через него же идёт удаление человека со
+# страницы: у бота в памяти расписание напоминаний, и его надо почистить тоже.
+SERVICE_BOT: TelegramBot | None = None
+
 MAX_TEXT = 4000          # длиннее человек за раз не пишет, а разбирать дорого
 MAX_BODY = 64 * 1024
 MAX_CITY = 80            # самое длинное название города в России короче вдвое
@@ -1105,20 +1109,47 @@ def _check_server_settings() -> None:
     if ACCOUNTS is None:
         raise SystemExit(f"MIRA_MODE=server: база {DB_FILE} недоступна, "
                          "проверьте MIRA_DB и права на каталог")
+    if not token_is_shaped_right(os.environ.get("TELEGRAM_TOKEN", "")):
+        raise SystemExit("MIRA_MODE=server: задайте TELEGRAM_TOKEN - токен бота сервиса "
+                         "от @BotFather. Без бота в сервис нельзя войти.")
+
+
+def _start_service_bot() -> None:
+    """
+    Бот сервиса - в том же процессе, отдельным потоком: веб-сервер и опрос
+    Telegram делят один дневник в памяти. Второй процесс на тот же файл
+    затирал бы чужие дни своей памятью.
+    """
+    global SERVICE_BOT, BOT_NAME
+    token = os.environ.get("TELEGRAM_TOKEN", "").strip()
+    SERVICE_BOT = TelegramBot(token=token, store=STORE, parser=PARSER,
+                              accounts=ACCOUNTS, public_url=f"https://{PUBLIC_HOST}")
+    try:
+        BOT_NAME = SERVICE_BOT.username()
+    except Exception as exc:
+        # Telegram недоступен при запуске - это не повод не подниматься:
+        # опрос будет стучаться сам, а страница просто не назовёт бота.
+        print(f"Имя бота не узнал: {SERVICE_BOT._trace(exc)}")
+    threading.Thread(target=SERVICE_BOT.run, daemon=True).start()
 
 
 def main() -> None:
-    # Перенос старого города делаем при запуске программы, а не при импорте:
-    # модуль импортируют и тесты, а трогать файлы человека они не должны.
-    _move_city_from_file()
     threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
     if MODE == "server":
         _check_server_settings()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    if MODE == "server":
         # Каталог с базой - только владельцу процесса. Сам файл sqlite
         # заводит хранилище с правами 0600.
         os.chmod(DB_FILE.parent, 0o700)
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")
+        _start_service_bot()
+        print(f"Мира в режиме server: https://{PUBLIC_HOST}, слушаю {HOST}:{PORT}")
+    else:
+        # Перенос старого города делаем при запуске программы, а не при
+        # импорте: модуль импортируют и тесты, а трогать файлы человека они
+        # не должны. В режиме server дневника страницы нет, переносить некуда.
+        _move_city_from_file()
+        print(f"Откройте http://{HOST}:{PORT} - остановить: Ctrl+C")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

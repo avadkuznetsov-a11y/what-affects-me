@@ -9,13 +9,15 @@
 делает бот - здесь нет ни сети, ни Telegram, и поэтому всё это можно проверить
 тестом, не поднимая ни того ни другого.
 
-Всё в памяти процесса, как и остальной прототип: перезапустили - расписание
-собирается заново из тех, кто напишет боту. База появится вместе с личным
-кабинетом.
+В режиме local всё в памяти процесса: перезапустили - расписание собирается
+заново из тех, кто напишет боту. В режиме server расписание лежит в таблице
+`reminders` того же файла, что и дневники: у сервиса сотни людей, и терять их
+время напоминаний при каждой выкладке нельзя.
 """
 from __future__ import annotations
 
 import re
+import sqlite3
 import threading
 from datetime import date, datetime
 
@@ -66,9 +68,21 @@ class Schedule:
     со страницы потоков становится два.
     """
 
-    def __init__(self, at: str = DEFAULT_TIME) -> None:
+    def __init__(self, at: str = DEFAULT_TIME, storage=None,
+                 max_chats: int | None = MAX_CHATS) -> None:
+        """
+        storage - файл дневников (wam.storage.Storage). С ним расписание
+        переживает перезапуск, без него живёт в памяти, как раньше.
+
+        max_chats - потолок расписания. В режиме local боту пишет кто угодно,
+        и потолок защищает память. В режиме server в расписание попадают
+        только люди, давшие согласие, их и так ровно столько, сколько
+        пользователей, поэтому потолка нет (None).
+        """
         self._lock = threading.Lock()
         self._default = minutes_of(at)
+        self._storage = storage
+        self._max = max_chats
         self._at: dict[int, int] = {}       # чат -> когда напоминать
         # Выключенные держим отдельно от времени: человек выключил напоминания
         # на день-другой, а включив обратно, ждёт своё прежнее время, а не
@@ -76,6 +90,54 @@ class Schedule:
         self._off: set[int] = set()
         self._sent: dict[int, date] = {}
         self._chats: list[int] = []
+        self._complained = False
+        if storage is not None:
+            self._load()
+
+    def _load(self) -> None:
+        """Расписание с прошлого запуска. Кривая строка пропускается, а не роняет бота."""
+        try:
+            with self._storage.atomic() as db:
+                rows = db.execute("SELECT chat_id, at, off, sent FROM reminders "
+                                  "ORDER BY rowid").fetchall()
+        except sqlite3.Error as exc:
+            self._failed(exc)
+            return
+        for chat_id, at, off, sent in rows:
+            chat_id = int(chat_id)
+            self._chats.append(chat_id)
+            if at is not None and 0 <= int(at) < 24 * 60:
+                self._at[chat_id] = int(at)
+            if off:
+                self._off.add(chat_id)
+            try:
+                if sent:
+                    self._sent[chat_id] = date.fromisoformat(sent)
+            except ValueError:
+                pass
+
+    def _write(self, chat_id: int) -> None:
+        """
+        Записать строку чата как она есть в памяти. Зовётся под своим замком:
+        замок хранилища в проекте самый внутренний, обратного порядка нет.
+        """
+        if self._storage is None:
+            return
+        sent = self._sent.get(chat_id)
+        try:
+            with self._storage.atomic() as db:
+                db.execute("INSERT OR REPLACE INTO reminders(chat_id, at, off, sent) "
+                           "VALUES(?,?,?,?)",
+                           (chat_id, self._at.get(chat_id), int(chat_id in self._off),
+                            sent.isoformat() if sent else ""))
+        except sqlite3.Error as exc:
+            self._failed(exc)
+
+    def _failed(self, exc: Exception) -> None:
+        """Диск подвёл: напоминания работают из памяти, жалуемся один раз."""
+        if not self._complained:
+            self._complained = True
+            print(f"Напоминания не сохраняются на диск: {type(exc).__name__}")
 
     def remember(self, chat_id: int) -> None:
         """Чат, который написал боту: только таким и есть смысл напоминать."""
@@ -83,13 +145,31 @@ class Schedule:
             if chat_id in self._chats:
                 return
             self._chats.append(chat_id)
-            if len(self._chats) > MAX_CHATS:
+            self._write(chat_id)
+            if self._max is not None and len(self._chats) > self._max:
                 # Выбывает тот, кто написал раньше всех: его дневник в памяти
                 # тоже уже мог истечь.
                 gone = self._chats.pop(0)
-                self._at.pop(gone, None)
-                self._off.discard(gone)
-                self._sent.pop(gone, None)
+                self._drop(gone)
+
+    def forget(self, chat_id: int) -> None:
+        """Убрать чат из расписания совсем: человек удалил свои данные."""
+        with self._lock:
+            if chat_id in self._chats:
+                self._chats.remove(chat_id)
+            self._drop(chat_id)
+
+    def _drop(self, chat_id: int) -> None:
+        self._at.pop(chat_id, None)
+        self._off.discard(chat_id)
+        self._sent.pop(chat_id, None)
+        if self._storage is None:
+            return
+        try:
+            with self._storage.atomic() as db:
+                db.execute("DELETE FROM reminders WHERE chat_id=?", (chat_id,))
+        except sqlite3.Error as exc:
+            self._failed(exc)
 
     def chats(self) -> list[int]:
         with self._lock:
@@ -102,17 +182,21 @@ class Schedule:
         with self._lock:
             self._at[chat_id] = at
             self._off.discard(chat_id)      # назначил время - значит, они нужны
+            self._write(chat_id)
         return as_clock(at)
 
     def turn_off(self, chat_id: int) -> None:
         with self._lock:
             self._off.add(chat_id)
+            if chat_id in self._chats:
+                self._write(chat_id)
 
     def turn_on(self, chat_id: int) -> str:
         """Вернуть напоминания на прежнее время; не задавали - на вечернее."""
         self.remember(chat_id)
         with self._lock:
             self._off.discard(chat_id)
+            self._write(chat_id)
             return as_clock(self._at.get(chat_id, self._default))
 
     def is_on(self, chat_id: int) -> bool:
@@ -149,3 +233,5 @@ class Schedule:
         """
         with self._lock:
             self._sent[chat_id] = day
+            if chat_id in self._chats:
+                self._write(chat_id)

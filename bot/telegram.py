@@ -8,6 +8,12 @@
 Записи лежат в общем дневнике (wam.diary): если открыта страница Миры и человек
 прислал боту код привязки, чат и страница ведут один дневник на двоих.
 
+Режим server (MIRA_MODE=server) - бот сервиса для многих людей. Кода привязки
+там нет: человек пишет /start, бот заводит его по номеру в Telegram и
+присылает одноразовую ссылку на страницу. Пока человек не дал согласие на
+обработку данных о здоровье, бот ничего не записывает. Этот режим включается
+тем, что боту передан учёт людей (`accounts`); запускает его web/server.py.
+
 Запуск:
     export TELEGRAM_TOKEN=...          # токен от @BotFather
     export SALUTE_SPEECH_TOKEN=...     # необязательно, для голосовых
@@ -18,6 +24,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -29,7 +36,9 @@ import urllib.request
 from datetime import date, datetime
 
 from wam import dialog
+from wam.accounts import user_key
 from wam.diary import DiaryStore, looks_like_code
+from wam.limits import Limiter
 from wam.llm import ssl_context
 from wam.storage import DIARY_FILE
 from wam.habits import wrote_that_day
@@ -77,6 +86,55 @@ COMMANDS = [
     {"command": "помощь", "description": "что я умею"},
 ]
 
+# Режим server: бот сервиса, у каждого свой дневник. Команды подписаны
+# латиницей: кириллические Telegram в меню не принимает.
+SERVICE_COMMANDS = [
+    {"command": "login", "description": "ссылка для входа на страницу"},
+    {"command": "summary", "description": "что уже известно"},
+    {"command": "reminder", "description": "во сколько напоминать"},
+    {"command": "export", "description": "как скачать свои записи"},
+    {"command": "delete", "description": "удалить все мои данные"},
+    {"command": "help", "description": "что я умею"},
+]
+
+SERVICE_HELLO = (
+    "Привет, я Мира. Расскажу, что на вас влияет - по вашим же записям.\n\n"
+    "Ваш дневник на странице: {link}\n"
+    "Ссылка действует десять минут и открывается один раз. Войти снова - /login."
+)
+
+SERVICE_HELP = (
+    "Пишите про день обычными словами или голосовым - я разберу сам.\n\n"
+    "Когда наберётся достаточно дней, скажу, что на вас влияет: не советом из "
+    "интернета, а по вашим записям.\n\n"
+    f"Вечером, около {DEFAULT_TIME}, напомню записать день, если вы сегодня "
+    "ничего не написали.\n\n"
+    "/login - ссылка для входа на страницу\n"
+    "/summary - что уже известно\n"
+    "/reminder 20:30 - во сколько напоминать, /reminder выкл\n"
+    "/export - как скачать свои записи\n"
+    "/delete - удалить все мои данные\n"
+    "/help - это сообщение"
+)
+
+CONSENT_ASK = (
+    "Прежде чем я начну записывать, нужно ваше согласие на обработку данных о "
+    "здоровье: того, что вы рассказываете про сон, самочувствие и привычки. "
+    "Что это значит и как всё удалить: {privacy}\n\n"
+    "Согласиться можно кнопкой ниже или на странице дневника."
+)
+
+CONSENT_BUTTON = {"inline_keyboard": [[{"text": "Согласен", "callback_data": "consent"}]]}
+
+# Подтверждение удаления: слово, которое случайно не напишешь, и срок, после
+# которого просьба об удалении забывается.
+ERASE_WORD = "УДАЛИТЬ"
+ERASE_WAIT = 5 * 60
+
+# Сколько сообщений в минуту принимаем от одного чата. Живой человек столько
+# не пишет; больше - это скрипт, и каждое его сообщение стоит разбора моделью.
+CHAT_LIMIT = 30
+
 # Как выключить и включить напоминания словом, а не временем.
 REMINDER_OFF = ("выкл", "выключить", "отключить", "не надо", "off", "нет")
 REMINDER_ON = ("вкл", "включить", "on", "да")
@@ -86,13 +144,45 @@ class TelegramError(RuntimeError):
     """Телеграм ответил отказом или не ответил совсем."""
 
 
+class Reply(str):
+    """
+    Ответ с настройками отправки: кнопками или выключенным превью ссылки.
+    Это та же строка, поэтому всё, что сравнивает ответы бота с текстом,
+    работает как раньше, а `process` достаёт настройки из `options`.
+    """
+
+    options: dict
+
+    def __new__(cls, text: str, **options):
+        reply = super().__new__(cls, text)
+        reply.options = options
+        return reply
+
+
+def trace(exc: BaseException) -> str:
+    """
+    Что написать в журнал про ошибку. Текст исключения в журнал не идёт: в нём
+    бывает кусок того, что человек рассказал про своё здоровье (разбор речи
+    падает на конкретной фразе). Тип и короткий отпечаток текста дают
+    отличить одну беду от другой и не раскрывают ничего.
+    """
+    digest = hashlib.sha256(str(exc).encode("utf-8", "replace")).hexdigest()[:8]
+    return f"{type(exc).__name__} #{digest}"
+
+
 def token_is_shaped_right(token: str) -> bool:
     return bool(TOKEN_SHAPE.fullmatch((token or "").strip()))
 
 
 class TelegramBot:
     def __init__(self, token: str | None = None, store: DiaryStore | None = None,
-                 parser: dialog.Parser | None = None, timeout: int = TIMEOUT) -> None:
+                 parser: dialog.Parser | None = None, timeout: int = TIMEOUT,
+                 accounts=None, public_url: str = "") -> None:
+        """
+        accounts и public_url - режим server: учёт людей (wam.accounts.Accounts)
+        и адрес страницы, на который бот шлёт ссылки входа. Без них бот
+        работает как раньше - один дневник и код привязки.
+        """
         self.token = (token or os.environ.get("TELEGRAM_TOKEN", "")).strip()
         if not self.token:
             raise RuntimeError("не задан TELEGRAM_TOKEN")
@@ -100,7 +190,20 @@ class TelegramBot:
         self.parser = parser
         self.timeout = timeout
         self.speech = SaluteSpeech() if os.environ.get("SALUTE_SPEECH_TOKEN") else None
-        self.reminders = Schedule()
+        self.accounts = accounts
+        self.public_url = public_url.rstrip("/")
+        if accounts is not None:
+            # Расписание лежит в базе, а потолка нет: в нём только люди,
+            # давшие согласие, и их ровно столько, сколько пользователей.
+            self.reminders = Schedule(storage=accounts.storage, max_chats=None)
+        else:
+            self.reminders = Schedule()
+        self.limit = Limiter(CHAT_LIMIT, 60)
+        self._erasing: dict[int, float] = {}     # чат -> когда попросил удалить всё
+
+    @property
+    def service(self) -> bool:
+        return self.accounts is not None
 
     # ── общение с Telegram ────────────────────────────────────────────────
     def _hide(self, text: str) -> str:
@@ -139,10 +242,10 @@ class TelegramBot:
     def username(self) -> str:
         """Имя бота по токену. Заодно проверка, что токен рабочий."""
         name = self._call("getMe")["result"].get("username", "")
-        self.publish_commands()
+        self.publish_commands(SERVICE_COMMANDS if self.service else COMMANDS)
         return name
 
-    def publish_commands(self) -> None:
+    def publish_commands(self, commands: list[dict] = COMMANDS) -> None:
         """
         Показать команды в меню у поля ввода. Обработчики без этого работают,
         но человек про команды не знает: их негде увидеть.
@@ -150,12 +253,16 @@ class TelegramBot:
         Отказ не важен: команды - удобство, а не работа бота.
         """
         try:
-            self._call("setMyCommands", commands=json.dumps(COMMANDS, ensure_ascii=False))
+            self._call("setMyCommands", commands=json.dumps(commands, ensure_ascii=False))
         except Exception:
             pass
 
-    def send(self, chat_id: int, text: str) -> None:
-        self._call("sendMessage", chat_id=chat_id, text=text)
+    def send(self, chat_id: int, text: str, **options) -> None:
+        """Отправить сообщение. Кнопки и прочие сложные поля Telegram ждёт в JSON."""
+        extra = {name: json.dumps(value, ensure_ascii=False)
+                 if isinstance(value, (dict, list)) else value
+                 for name, value in options.items()}
+        self._call("sendMessage", chat_id=chat_id, text=text, **extra)
 
     def download(self, file_id: str) -> bytes:
         info = self._call("getFile", file_id=file_id)
@@ -170,6 +277,8 @@ class TelegramBot:
         chat_id = message.get("chat", {}).get("id")
         if chat_id is None:
             return ""       # без чата отвечать некому, и дневник заводить не на кого
+        if self.service:
+            return self._serve(message)
         text = (message.get("text") or "").strip()
         # Напоминаем только тем, кто сам написал боту: рассылать незнакомым
         # некому и незачем.
@@ -199,6 +308,12 @@ class TelegramBot:
 
     def handle_voice(self, message: dict) -> str:
         """Голосовое: скачиваем, распознаём, дальше как обычный текст."""
+        if self.service:
+            # Голос уходит на распознавание в чужой сервис - это уже обработка.
+            # Без согласия не скачиваем и не распознаём ничего.
+            refusal = self._gate(message)
+            if refusal is not None:
+                return refusal
         voice = message.get("voice") or message.get("audio") or {}
         file_id = voice.get("file_id")
         if not file_id:
@@ -211,6 +326,145 @@ class TelegramBot:
         if not text:
             return "Не разобрал речь. Попробуйте ещё раз или напишите текстом."
         return self.handle({**message, "text": text})
+
+    # ── режим server ──────────────────────────────────────────────────────
+    def _serve(self, message: dict) -> str:
+        """
+        Сообщение в боте сервиса. Человек - это номер отправителя в Telegram,
+        дневник у каждого свой (`u:<номер>`), кодов привязки нет.
+        """
+        chat_id = message["chat"]["id"]
+        text = (message.get("text") or "").strip()
+        command = text.split(maxsplit=1)[0].split("@", 1)[0].lower() if text else ""
+
+        if not self._private(message):
+            return ""
+
+        if command in ("/start", "/login"):
+            return self._welcome(message, first=command == "/start")
+        if command in ("/help", "/помощь"):
+            return SERVICE_HELP
+
+        # Удалить свои данные можно и без согласия: оно нужно, чтобы записывать,
+        # а не чтобы уйти.
+        if self.accounts.user(chat_id) is None:
+            return "Напишите /start - так я заведу ваш дневник."
+        if command == "/delete":
+            self._erasing[chat_id] = time.time()
+            return ("Это удалит всё: записи, напоминания и вход на страницу. Вернуть "
+                    f"будет нельзя. Чтобы подтвердить, напишите одно слово: {ERASE_WORD}.\n"
+                    "Передумали - просто напишите что-нибудь другое.")
+        asked = self._erasing.pop(chat_id, None)
+        if asked is not None and time.time() - asked <= ERASE_WAIT and text == ERASE_WORD:
+            self.erase(chat_id)
+            return ("Готово: ваши записи, напоминания и вход на страницу удалены. "
+                    "Из резервных копий они уйдут в течение 14 дней. Чтобы начать "
+                    "заново, напишите /start.")
+
+        refusal = self._gate(message)
+        if refusal is not None:
+            return refusal
+        if command == "/export":
+            return ("Скачать записи можно на странице, в блоке «Мои данные»: там дневник "
+                    "текстом и таблицей для Excel. Ссылка для входа - /login.")
+        if command in ("/summary", "/итоги"):
+            return self.summary(chat_id)
+        if command in ("/reminder", "/напоминание"):
+            return self.set_reminder(chat_id, text.split(maxsplit=1)[1:])
+        if not text:
+            return "Пока понимаю только текст и голосовые. Напишите пару фраз о дне."
+
+        diary = self._diary_of(chat_id)
+        messages = dialog.step(diary, text, links=diary.links(),
+                               hints=diary.hints(),
+                               parser=self.parser, origin="chat")
+        return self._as_text(messages)
+
+    @staticmethod
+    def _private(message: dict) -> bool:
+        """
+        Только личная переписка. В группе номер чата - не номер человека, и
+        записи одного легли бы в дневник, который видят все участники.
+        """
+        chat = message.get("chat") or {}
+        sender = message.get("from") or {}
+        return chat.get("type", "private") == "private" and sender.get("id") == chat.get("id")
+
+    def _welcome(self, message: dict, first: bool) -> Reply:
+        """Завести человека, привязать чат и прислать одноразовую ссылку входа."""
+        user_id = message["chat"]["id"]
+        self.accounts.enroll(user_id, (message.get("from") or {}).get("username", ""))
+        self.store.attach(user_id, user_key(user_id))
+        link = f"{self.public_url}/login#t={self.accounts.issue_login(user_id)}"
+        if first:
+            text = SERVICE_HELLO.format(link=link)
+        else:
+            text = (f"Ссылка для входа: {link}\n"
+                    "Действует десять минут и открывается один раз.")
+        # Превью выключаем: сервис превью сам ходит по ссылке, и токен,
+        # который мы так берегли, уехал бы на чужой сервер.
+        options = {"link_preview_options": {"is_disabled": True}}
+        if not self.accounts.has_consent(user_id):
+            text += "\n\n" + CONSENT_ASK.format(privacy=f"{self.public_url}/privacy")
+            options["reply_markup"] = CONSENT_BUTTON
+        else:
+            self.reminders.remember(user_id)
+            if first:
+                text += "\n\nНапишите или наговорите, как прошёл день."
+        return Reply(text, **options)
+
+    def _gate(self, message: dict) -> str | None:
+        """
+        Можно ли принимать от человека записи. None - можно; иначе ответ,
+        почему нельзя. Пока нет согласия, ничего не пишем в дневник.
+        """
+        if not self._private(message):
+            return ""
+        user_id = message["chat"]["id"]
+        if self.accounts.user(user_id) is None:
+            return "Напишите /start - так я заведу ваш дневник."
+        if not self.accounts.has_consent(user_id):
+            return Reply("Сначала подтвердите согласие. "
+                         + CONSENT_ASK.format(privacy=f"{self.public_url}/privacy"),
+                         link_preview_options={"is_disabled": True},
+                         reply_markup=CONSENT_BUTTON)
+        # Напоминаем только тем, кто согласился и сам пишет боту
+        self.reminders.remember(user_id)
+        return None
+
+    def consent(self, query: dict) -> None:
+        """Нажата кнопка «Согласен» под сообщением бота."""
+        user_id = (query.get("from") or {}).get("id")
+        try:
+            self._call("answerCallbackQuery", callback_query_id=query.get("id", ""))
+        except TelegramError:
+            pass        # часики на кнопке погаснут сами, согласие важнее
+        if query.get("data") != "consent" or user_id is None:
+            return
+        if self.accounts.user(user_id) is None:
+            self.send(user_id, "Напишите /start - так я заведу ваш дневник.")
+            return
+        self.accounts.agree(user_id)
+        self.reminders.remember(user_id)
+        self.send(user_id, "Спасибо. Теперь пишите или наговаривайте, как прошёл день.")
+
+    def erase(self, user_id: int) -> None:
+        """
+        Удалить человека целиком: дневник, привязку чата, напоминания, сессии
+        и учётную запись. То же самое делает кнопка «Удалить всё» на странице.
+        """
+        self.accounts.erase(user_id, self.store)
+        self.reminders.forget(user_id)
+        self._erasing.pop(user_id, None)
+
+    def _diary_of(self, chat_id: int):
+        """
+        Дневник этого чата. В режиме server - всегда дневник самого человека:
+        гостевых дневников tg:* там не бывает.
+        """
+        if self.service:
+            return self.store.get(user_key(chat_id))
+        return self.store.diary_for_chat(chat_id)
 
     def _bind(self, code: str, chat_id: int) -> str:
         if self.store.bind(code, chat_id) is None:
@@ -270,7 +524,7 @@ class TelegramBot:
         запись могла прийти и со страницы, а напоминание после неё выглядит
         так, будто мы его не услышали.
         """
-        diary = self.store.diary_for_chat(chat_id)
+        diary = self._diary_of(chat_id)
         with diary.lock:
             return any(record.day == today and wrote_that_day(record)
                        for record in diary.timeline.days)
@@ -296,14 +550,14 @@ class TelegramBot:
             try:
                 self.send(chat_id, REMINDER)
             except Exception as exc:
-                print(f"Напоминание не ушло: {self._hide(str(exc))}")
+                print(f"Напоминание не ушло: {self._trace(exc)}")
                 continue
             self.reminders.mark_sent(chat_id, now.date())
             sent.append(chat_id)
         return sent
 
     def summary(self, chat_id: int) -> str:
-        diary = self.store.diary_for_chat(chat_id)
+        diary = self._diary_of(chat_id)
         days = len(diary.timeline)
         if days < 7:
             return (f"В дневнике {days} дней. Для первых выводов нужно недели три, "
@@ -320,19 +574,32 @@ class TelegramBot:
     # ── основной цикл ─────────────────────────────────────────────────────
     def process(self, update: dict) -> None:
         """Один апдейт: разобрать и ответить. Ошибка тут не должна ронять цикл."""
+        query = update.get("callback_query")
+        if query and self.service:
+            if self.limit.allow((query.get("from") or {}).get("id")):
+                self.consent(query)
+            return
         message = update.get("message") or {}
         chat_id = message.get("chat", {}).get("id")
         if not chat_id:
             return          # посты в каналах и прочее без чата нам не адресованы
+        if self.service and not self.limit.allow(chat_id):
+            # Сверх потолка молчим: ответ «слишком часто» стоит столько же,
+            # сколько обычный, а скрипту он ничего не объяснит.
+            return
         try:
             answer = (self.handle_voice(message)
                       if message.get("voice") or message.get("audio")
                       else self.handle(message))
         except Exception as exc:
-            print(f"Ошибка на сообщении: {self._hide(str(exc))}")
+            print(f"Ошибка на сообщении: {trace(exc)}")
             answer = "Не получилось разобрать это сообщение. Попробуйте ещё раз."
         if answer:
-            self.send(chat_id, answer)
+            options = getattr(answer, "options", None)
+            if options:
+                self.send(chat_id, str(answer), **options)
+            else:
+                self.send(chat_id, answer)
 
     def run(self, stop: threading.Event | None = None,
             on_error=None) -> None:
@@ -350,7 +617,7 @@ class TelegramBot:
             try:
                 self.remind()
             except Exception as exc:
-                print(f"Напоминания: {self._hide(str(exc))}")
+                print(f"Напоминания: {self._trace(exc)}")
 
             try:
                 updates = self._call("getUpdates", offset=offset, timeout=self.timeout)
@@ -383,7 +650,17 @@ class TelegramBot:
                 except Exception as exc:
                     # Не смогли даже ответить - остальные сообщения из пачки
                     # это не должно съедать.
-                    print(f"Ошибка ответа: {self._hide(str(exc))}")
+                    print(f"Ошибка ответа: {self._trace(exc)}")
+
+    def _trace(self, exc: BaseException) -> str:
+        """
+        Отказ Telegram пишем как есть, без токена: в нём только метод и причина
+        от самого Telegram, а без причины не понять, что сломалось. Любую
+        другую ошибку - только типом и отпечатком, см. trace().
+        """
+        if isinstance(exc, TelegramError):
+            return self._hide(str(exc))
+        return trace(exc)
 
     @staticmethod
     def _pause(seconds: float, stop: threading.Event | None) -> None:
