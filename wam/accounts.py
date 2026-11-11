@@ -50,6 +50,11 @@ COOKIE = "__Host-mira_sid"
 # кнопке «Удалить всё». Переопределяется переменной MIRA_RETENTION_DAYS.
 RETENTION_DAYS = 365
 
+# Сколько дней ждать согласия. Человек написал боту /start и не согласился -
+# через неделю его учётная запись (номер и имя в Telegram) удаляется: хранить
+# ПДн того, кто сервисом так и не стал пользоваться, незачем.
+CONSENT_WAIT_DAYS = 7
+
 
 def user_key(user_id: int) -> str:
     """Ключ дневника человека. Один номер - всегда один и тот же дневник."""
@@ -193,6 +198,11 @@ class Accounts:
         with self.storage.atomic() as db:
             db.execute("DELETE FROM sessions WHERE sid_hash=?", (_digest(sid),))
 
+    def close_all_sessions(self, user_id: int) -> None:
+        """Выйти везде: вход, забытый на чужом компьютере, гаснет вместе с этим."""
+        with self.storage.atomic() as db:
+            db.execute("DELETE FROM sessions WHERE user_id=?", (int(user_id),))
+
     # ── срок хранения ─────────────────────────────────────────────────────
     def idle(self, days: int, now: float | None = None) -> list[int]:
         """
@@ -213,24 +223,56 @@ class Accounts:
                 "          COALESCE(d.seen, 0)) < ?", (edge,)).fetchall()
         return [int(row[0]) for row in rows]
 
+    def unconsented(self, days: int = CONSENT_WAIT_DAYS,
+                    now: float | None = None) -> list[int]:
+        """Кто завёл учётную запись дольше `days` дней назад и так и не согласился."""
+        edge = (time.time() if now is None else now) - days * 24 * 60 * 60
+        with self.storage.atomic() as db:
+            rows = db.execute("SELECT user_id FROM users "
+                              "WHERE consent_at IS NULL AND created_at < ?", (edge,)).fetchall()
+        return [int(row[0]) for row in rows]
+
+    def orphans(self) -> list[str]:
+        """
+        Дневники людей (u:<номер>), у которых нет учётной записи. Так бывает,
+        если запись в дневник легла в гонке с удалением человека или удаление
+        когда-то оборвалось. Чужого в них ничего нет, но и хозяина уже нет -
+        их стирает чистка по сроку.
+        """
+        with self.storage.atomic() as db:
+            rows = db.execute(
+                "SELECT diary FROM diaries WHERE diary LIKE 'u:%' "
+                "AND NOT EXISTS (SELECT 1 FROM users "
+                "                WHERE 'u:' || users.user_id = diaries.diary) "
+                "UNION SELECT DISTINCT diary FROM days WHERE diary LIKE 'u:%' "
+                "AND NOT EXISTS (SELECT 1 FROM users "
+                "                WHERE 'u:' || users.user_id = days.diary)").fetchall()
+        return sorted(row[0] for row in rows)
+
     # ── удаление ──────────────────────────────────────────────────────────
     def erase(self, user_id: int, store) -> None:
         """
         Удалить человека целиком: учётную запись, сессии, ссылки входа,
         напоминания, привязку чатов и сам дневник.
 
-        Сначала учёт, потом дневник. Пока дневник стирается, бот и страница не
-        должны успеть записать в него снова: без учётной записи бот новую
-        реплику не принимает, а без сессии страница - запрос.
+        Всё одной транзакцией sqlite: или удалено всё, или ничего, и тогда
+        ошибка долетает до вызвавшего (страница отвечает 500, бот - «не
+        получилось»). Пока дневник стирается, его держит замок дневника, а
+        после - без учётной записи бот новую реплику не примет, без сессии
+        страница не примет запрос.
 
         `store` - хранилище дневников (wam.diary.DiaryStore). Принимаем его
         параметром, а не импортом: дневники про учёт людей знать не должны.
         """
         uid = int(user_id)
-        with self.storage.atomic() as db:
+
+        def account(db):
             db.execute("DELETE FROM sessions WHERE user_id=?", (uid,))
             db.execute("DELETE FROM login_tokens WHERE user_id=?", (uid,))
             # В личном чате номер чата совпадает с номером человека
             db.execute("DELETE FROM reminders WHERE chat_id=?", (uid,))
             db.execute("DELETE FROM users WHERE user_id=?", (uid,))
-        store.forget(user_key(uid))
+
+        # Одной транзакцией с дневником: ошибка на середине не оставит
+        # человека «удалённым» без учётной записи, но с записями на диске.
+        store.forget(user_key(uid), also=account)

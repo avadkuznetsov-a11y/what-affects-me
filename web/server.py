@@ -24,6 +24,7 @@ import json
 import os
 import re
 import signal
+import sys
 import threading
 import time
 from datetime import date, timedelta
@@ -31,7 +32,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from bot.telegram import TelegramBot, token_is_shaped_right
+from bot.telegram import TelegramBot, token_is_shaped_right, trace
 from demo.generate import build
 from wam import dialog, export, food, weather
 from wam import accounts, limits
@@ -138,6 +139,11 @@ MAX_FOOD = {"калории": 20_000.0, "белки": 1000.0, "жиры": 1000.0
 # Выгрузка КБЖУ: строка на день - десятки байт, год строк укладывается в
 # десяток килобайт. Больше общего предела на тело запроса всё равно не пройдёт.
 MAX_CSV = MAX_BODY // 2
+# Из выгрузки КБЖУ берём дни только за последние два года и до сегодня.
+FOOD_WINDOW_DAYS = 2 * 366
+# Потолок дней в одном дневнике. Два года каждый день с запасом: больше
+# человек за пилот не наберёт, а держать в памяти дневник без конца нельзя.
+MAX_DIARY_DAYS = 800
 
 
 def period_name(days: int) -> str:
@@ -166,16 +172,13 @@ def page() -> bytes:
                 .replace("__PERIODS__", periods)
                 .replace("__DEFAULT_DAYS__", str(DEFAULT_DAYS))
                 .replace("__BOT__", BOT_NAME))
-    if MODE == "server":
-        # Шрифты Google на сервисе не грузим: запрос к чужому домену отдаёт
-        # Google адрес каждого, кто открыл дневник, и CSP его всё равно не
-        # пустит (default-src 'self'). У шрифтов в странице есть запасной
-        # стек, без них она выглядит так же, только системным шрифтом.
-        html = GOOGLE_FONTS.sub("", html)
     return html.encode("utf-8")
 
 
-GOOGLE_FONTS = re.compile(r'<link\b[^>]*https://fonts\.(?:googleapis|gstatic)\.com[^>]*>\s*')
+# Шрифты страницы: отдаём только эти файлы и только по точному имени - путь
+# из запроса к диску не приклеивается, выйти из каталога нечем.
+FONTS_DIR = Path(__file__).parent / "fonts"
+FONTS = {f"/fonts/{path.name}": path for path in FONTS_DIR.glob("*.woff2")}
 
 
 # ── состояние разговора ───────────────────────────────────────────────────
@@ -495,6 +498,10 @@ def _food_step(key: str, payload: dict, since: int = 0) -> dict:
                                       "Нужны колонки: дата, калории, белки, жиры, углеводы."}
 
     with diary.lock:
+        known = {record.day for record in diary.timeline.days}
+        if len(known | set(by_day)) > MAX_DIARY_DAYS:
+            return {"ok": False, "error": "В дневнике уже слишком много дней, "
+                                          "новые из выгрузки не помещаются."}
         before = diary.seq
         food.attach(diary.timeline, by_day)
         if len(by_day) == 1:
@@ -538,7 +545,17 @@ def _food_days(payload: dict) -> dict:
     if table is not None:
         if not isinstance(table, str):
             raise ValueError("csv: ожидается текст")
-        return food.read_csv(table[:MAX_CSV])
+        by_day = food.read_csv(table[:MAX_CSV])
+        # Дни из будущего и из прошлого века в дневник не кладём: каждый такой
+        # день - новая запись навсегда, и выгрузкой с датами вразброс можно
+        # было бы раздувать дневник сколько угодно.
+        today = date.today()
+        earliest = today - timedelta(days=FOOD_WINDOW_DAYS)
+        inside = {day: values for day, values in by_day.items() if earliest <= day <= today}
+        if by_day and not inside:
+            raise ValueError("Все даты в выгрузке - вне последних двух лет. "
+                             "Принимаю КБЖУ только за них.")
+        return inside
 
     values: dict[str, float] = {}
     for name, limit in MAX_FOOD.items():
@@ -665,12 +682,15 @@ def _short_basis(link) -> str:
 
 # Без входа в режиме server открыто только это: сама страница (она и есть
 # экран входа) и обмен ссылки от бота на сессию. Всё остальное - 401.
-OPEN_GET = ("/", "/login", "/privacy", "/healthz")
+OPEN_GET = ("/", "/login", "/privacy", "/healthz") + tuple(FONTS)
 OPEN_POST = ("/auth/login",)
 
-# Что можно без согласия: увидеть экран согласия, согласиться, выйти и
-# удалить себя. К дневнику без согласия не пускает ничто.
-NO_CONSENT = ("/state", "/consent", "/auth/logout", "/account/delete")
+# Что можно без согласия: увидеть экран согласия, согласиться, выйти,
+# удалить себя и забрать свои записи - доступ к своим данным не должен
+# зависеть от нового согласия (после смены текста политики, например).
+# Писать в дневник и смотреть его без согласия нельзя.
+NO_CONSENT = ("/state", "/consent", "/auth/logout", "/auth/logout-all",
+              "/account/delete", "/export")
 
 # Слово, которым человек подтверждает удаление всего. То же, что в боте.
 ERASE_WORD = "УДАЛИТЬ"
@@ -680,6 +700,13 @@ ERASE_WORD = "УДАЛИТЬ"
 # перебором. Погода ходит в чужой сервис - час на человека.
 LOGIN_LIMIT = limits.Limiter(10, 60)
 WEATHER_LIMIT = limits.Limiter(10, 60 * 60)
+# Выводы - самое дорогое, что умеет сервер (перестановочные тесты по всему
+# дневнику), КБЖУ - разбор выгрузки до 400 строк, город - запрос к геокодеру.
+# Человеку на странице столько не нужно никогда; столько нужно только тому,
+# кто хочет положить сервис.
+SUMMARY_LIMIT = limits.Limiter(10, 60)
+FOOD_LIMIT = limits.Limiter(10, 60)
+CITY_LIMIT = limits.Limiter(10, 60 * 60)
 
 # Кто оператор персональных данных - решает владелец, пока не решено.
 # Подставляется в текст политики, пустое значение честно видно как пропуск.
@@ -693,9 +720,9 @@ try:
 except ValueError:
     raise SystemExit("MIRA_RETENTION_DAYS: ожидается число дней") from None
 
-# Заголовки каждого ответа в режиме server. no-store - на всё: почти каждый
-# ответ несёт чужой дневник, сессию или метку CSRF, а страница весит десятки
-# килобайт и от кэша ничего не выигрывает. Общий компьютер или прокси не
+# Заголовки каждого ответа в режиме server. no-store - на всё, кроме шрифтов:
+# почти каждый ответ несёт чужой дневник, сессию или метку CSRF, а страница
+# весит десятки килобайт и от кэша ничего не выигрывает. Общий компьютер или прокси не
 # должны сохранять у себя ни строчки. HSTS ставит и nginx-proxy, но сервис
 # не должен зависеть от того, как настроен прокси перед ним.
 SECURITY_HEADERS = {
@@ -749,10 +776,33 @@ def page_policy(body: bytes) -> str:
 POST_PATHS = ("/say", "/summary", "/reset", "/city", "/weather", "/food")
 LOCAL_POST = ("/telegram/connect", "/telegram/disconnect",
               "/telegram/code", "/telegram/unlink")
-SERVER_POST = ("/auth/login", "/auth/logout", "/consent", "/account/delete")
+SERVER_POST = ("/auth/login", "/auth/logout", "/auth/logout-all", "/consent",
+               "/account/delete")
+
+
+class _Gone(Exception):
+    """Сессия живая, а человека уже нет: удалён, пока запрос был в пути."""
+
+
+class Server(ThreadingHTTPServer):
+    """
+    Сервер, который не пишет в журнал лишнего. Стандартный handle_error
+    печатает весь стек, а в тексте исключения бывают куски того, что человек
+    написал про здоровье. Пишем только тип и отпечаток, как бот.
+    """
+
+    def handle_error(self, request, client_address):
+        exc = sys.exc_info()[1]
+        # Человек закрыл вкладку, не дождавшись ответа, - не беда сервиса
+        if isinstance(exc, ConnectionError):
+            return
+        print(f"Ошибка запроса: {trace(exc)}")
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Сколько ждать запрос от открытого соединения. Без этого соединение,
+    # которое открыли и молчат, держит поток вечно, и сотня таких кладёт сервис.
+    timeout = 30
     # Чей это запрос. Заполняет _admit() и только он; до проверки входа
     # _user_key() отказывается называть дневник.
     uid: int | None = None
@@ -760,8 +810,40 @@ class Handler(BaseHTTPRequestHandler):
     # CSP этого ответа: у html-страницы своя, с хэшами её скриптов; у
     # остального - BASE_POLICY. Ставит _send(), отправляет end_headers().
     policy: str = ""
+    # Cache-Control этого ответа; пусто - no-store из SECURITY_HEADERS
+    cache: str = ""
 
     def do_GET(self):
+        self._guarded(self._get)
+
+    def do_POST(self):
+        self._guarded(self._post)
+
+    def _guarded(self, handle) -> None:
+        """
+        Любая неожиданная ошибка обработчика - честный 500 без подробностей,
+        а не оборванное соединение. В журнал - тип и отпечаток, без текста.
+        """
+        self.answered = False
+        try:
+            handle()
+        except _Gone:
+            if not self.answered:
+                self._fail(401, "Нужно войти: напишите боту /start или /login.")
+        except ConnectionError:
+            raise                       # клиент ушёл - отвечать некому
+        except Exception as exc:
+            print(f"Ошибка запроса: {trace(exc)}")
+            if not self.answered:
+                self.close_connection = True
+                self._fail(500, "внутренняя ошибка")
+
+    def send_response(self, code, message=None):
+        # Отметка «ответ уже начат»: второй ответ поверх первого испортил бы оба
+        self.answered = True
+        super().send_response(code, message)
+
+    def _get(self):
         self.uid, self.sid = None, ""
         path = urlparse(self.path).path
         if path == "/healthz":
@@ -781,6 +863,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/privacy":
             self._send(privacy(), "text/html; charset=utf-8")
+            return
+        if path in FONTS:
+            # Шрифт - не данные человека, его можно кэшировать: файлы меняются
+            # только с выкладкой, неделя - разумный срок.
+            self.cache = "public, max-age=604800"
+            self._send(FONTS[path].read_bytes(), "font/woff2")
             return
         if not self._admit() or not self._consented(path):
             return
@@ -850,7 +938,7 @@ class Handler(BaseHTTPRequestHandler):
             state["telegram"] = telegram
             self._json(state)
 
-    def do_POST(self):
+    def _post(self):
         self.uid, self.sid = None, ""
         if not self._ours():
             return
@@ -879,6 +967,10 @@ class Handler(BaseHTTPRequestHandler):
             ACCOUNTS.close_session(self.sid)
             self._send_json({"ok": True}, extra={"Set-Cookie": _cookie("", forget=True)})
             return
+        if path == "/auth/logout-all":
+            ACCOUNTS.close_all_sessions(self.uid)
+            self._send_json({"ok": True}, extra={"Set-Cookie": _cookie("", forget=True)})
+            return
         if path == "/consent":
             if payload.get("agree") is not True:
                 self._fail(400, "Без согласия дневник не откроется.")
@@ -890,7 +982,15 @@ class Handler(BaseHTTPRequestHandler):
             if payload.get("confirm") != ERASE_WORD:
                 self._fail(400, f"Чтобы удалить всё, впишите слово {ERASE_WORD}.")
                 return
-            _erase(self.uid)
+            try:
+                _erase(self.uid)
+            except Exception as exc:
+                # Удаление идёт одной транзакцией: раз упало - не удалено
+                # ничего, и сказать «готово» нельзя.
+                print(f"Удаление не прошло: {trace(exc)}")
+                self._fail(500, "Удалить не получилось, ничего не удалено. "
+                                "Попробуйте ещё раз через минуту.")
+                return
             self._send_json({"ok": True}, extra={"Set-Cookie": _cookie("", forget=True)})
             return
 
@@ -910,12 +1010,18 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/summary":
             # Выводы дописываются в ленту, то есть меняют состояние. Такое
             # нельзя отдавать по GET: чужая страница вызовет его картинкой.
+            if not self._allowed(SUMMARY_LIMIT, "Выводы просили слишком часто, "
+                                                "подождите минуту.", 60):
+                return
             self._json(_summary_step(key, _clamp_days(payload.get("days")),
                                      _seq(payload.get("since"))))
         elif path == "/reset":
             STORE.get(key).reset()
             self._json({"ok": True})
         elif path == "/city":
+            if not self._allowed(CITY_LIMIT, "Город меняли слишком часто, "
+                                             "попробуйте через час.", 3600):
+                return
             self._json(_set_city(key, payload.get("city")))
         elif path == "/weather":
             # Запрос ходит в сеть за погодой, а не только читает готовое,
@@ -926,6 +1032,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(_weather_today(key))
         elif path == "/food":
+            if not self._allowed(FOOD_LIMIT, "КБЖУ отправляли слишком часто, "
+                                             "подождите минуту.", 60):
+                return
             self._json(_food_step(key, payload, _seq(payload.get("since"))))
         elif path == "/telegram/connect":
             self._connect(payload)
@@ -981,6 +1090,13 @@ class Handler(BaseHTTPRequestHandler):
             return False
         self.uid, self.sid = uid, sid
         return True
+
+    def _allowed(self, limiter: limits.Limiter, reason: str, retry: int) -> bool:
+        """Потолок запросов на человека; в режиме local не нужен - человек один."""
+        if MODE != "server" or limiter.allow(self.uid):
+            return True
+        self._fail(429, reason, retry=retry)
+        return False
 
     def _consented(self, path: str) -> bool:
         """
@@ -1052,6 +1168,11 @@ class Handler(BaseHTTPRequestHandler):
             # Ошибка в самой программе: обработчик дошёл до дневника, не
             # проверив вход. Лучше упасть, чем отдать чей-то дневник.
             raise RuntimeError("дневник спрошен до проверки входа")
+        # Сессия могла пережить своего человека на долю секунды: удаление идёт
+        # из бота или с другой вкладки. Без этой проверки запрос в пути завёл
+        # бы удалённому человеку новый пустой дневник и записал бы в него.
+        if ACCOUNTS.user(self.uid) is None:
+            raise _Gone()
         return user_key(self.uid)
 
     def _connect(self, payload: dict) -> None:
@@ -1141,7 +1262,9 @@ class Handler(BaseHTTPRequestHandler):
             return None
         try:
             payload = json.loads(self.rfile.read(length) or b"{}")
-        except (json.JSONDecodeError, UnicodeDecodeError):
+        except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
+            # RecursionError - тысячи вложенных скобок: json.loads разбирает их
+            # рекурсией и падает на глубине, а это кривой запрос, не наша беда
             self._fail(400, "тело запроса не разобрать")
             return None
         if not isinstance(payload, dict):
@@ -1190,6 +1313,8 @@ class Handler(BaseHTTPRequestHandler):
         # (404, 400 на кривой запрос), им заголовки нужны так же.
         if MODE == "server":
             for name, value in SECURITY_HEADERS.items():
+                if name == "Cache-Control" and self.cache:
+                    value = self.cache
                 self.send_header(name, value)
             self.send_header("Content-Security-Policy", self.policy or BASE_POLICY)
         super().end_headers()
@@ -1242,14 +1367,17 @@ def _one_param(path: str, name: str, default: str = "") -> str:
 
 def _clamp_days(value, default: int = DEFAULT_DAYS) -> int:
     """
-    Срок дневника: только целое число в разумных пределах. Infinity в теле
-    запроса json.loads принимает молча, а int() от него бросает OverflowError -
-    и запрос обрывался без ответа вместо честного «беру срок по умолчанию».
+    Срок дневника: только один из PERIODS, всё остальное - срок по умолчанию.
+    Страница других и не шлёт, а под каждый срок заводится свой придуманный
+    дневник в _CACHE: свободное число открывало бы сотни таких на запросы.
+    Infinity в теле json.loads принимает молча, а int() от него бросает
+    OverflowError - его тоже считаем «не из списка».
     """
     try:
-        return max(14, min(365, int(value)))
+        days = int(value)
     except (TypeError, ValueError, OverflowError):
         return default
+    return days if days in {known for known, _ in PERIODS} else default
 
 
 def _seq(value, default: int = 0) -> int:
@@ -1331,14 +1459,19 @@ SWEEP_EVERY = 24 * 60 * 60
 
 def sweep_idle(now: float | None = None) -> int:
     """
-    Удалить аккаунты, в которые не входили и не писали дольше срока хранения.
-    Удаление полное, как по кнопке «Удалить всё». Возвращает, сколько удалено;
-    в журнал - только число, без номеров людей.
+    Удалить аккаунты, в которые не входили и не писали дольше срока хранения,
+    и те, кто за неделю так и не дал согласия. Удаление полное, как по кнопке
+    «Удалить всё». Заодно стираются дневники без хозяина. Возвращает, сколько
+    удалено; в журнал - только число, без номеров людей.
     """
-    gone = ACCOUNTS.idle(RETENTION_DAYS, now)
+    gone = set(ACCOUNTS.idle(RETENTION_DAYS, now)) | set(ACCOUNTS.unconsented(now=now))
     for user_id in gone:
         _erase(user_id)
-    return len(gone)
+    # Дневники без хозяина: запись, легшая в гонке с удалением человека
+    orphans = ACCOUNTS.orphans()
+    for key in orphans:
+        STORE.forget(key)
+    return len(gone) + len(orphans)
 
 
 def _sweeping(stop: threading.Event | None = None) -> None:
@@ -1421,11 +1554,15 @@ def main() -> None:
     threading.Thread(target=_diary, daemon=True).start()   # прогрев, чтобы первый ответ не ждал
     if MODE == "server":
         _check_server_settings()
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = Server((HOST, PORT), Handler)
     if MODE == "server":
         # Каталог с базой - только владельцу процесса. Сам файл sqlite
         # заводит хранилище с правами 0600.
         os.chmod(DB_FILE.parent, 0o700)
+        # Один раз затереть то, что удалили до secure_delete (см. scrub_once).
+        # До бота и до первого запроса: VACUUM держит базу целиком.
+        if STORE.storage.scrub_once():
+            print("База переписана: удалённое раньше затёрто")
         _start_service_bot()
         threading.Thread(target=_sweeping, args=(STOP,), daemon=True).start()
         print(f"Мира в режиме server: https://{PUBLIC_HOST}, слушаю {HOST}:{PORT}")

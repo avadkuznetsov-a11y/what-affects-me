@@ -6,14 +6,16 @@ Telegram подменён так же, как в test_bot.py: вместо се�
 складывает вызовы и отдаёт заготовленные ответы.
 """
 import json
+import sqlite3
 import threading
 from datetime import date, datetime, time
 from urllib.parse import urlparse
 
 import pytest
 
+from bot import telegram
 from bot.telegram import ERASE_WORD, CHAT_LIMIT, TelegramBot
-from wam import dialog
+from wam import dialog, limits
 from wam.accounts import Accounts, user_key
 from wam.diary import DiaryStore
 
@@ -154,7 +156,9 @@ def test_consent_button_opens_the_diary(world):
     assert bot.reminders.chats() == [101]
 
 
-def test_voice_is_not_even_downloaded_before_consent(world):
+def test_voice_is_not_even_downloaded_before_consent(world, monkeypatch):
+    """Голос на сервисе выключен, но когда его включат - без согласия ни байта."""
+    monkeypatch.setattr(telegram, "SERVICE_VOICE", True)
     bot, _, _, api = world
     _say(bot, "/start")
     downloads = []
@@ -396,3 +400,83 @@ def test_halt_waits_for_the_message_in_work(world):
     worker.join(5)
     assert not halter.is_alive() and not worker.is_alive()
     assert ("getUpdates", {"offset": 4, "timeout": 0}) in api.calls
+
+
+# ── голос на сервисе ──────────────────────────────────────────────────────
+
+def _agreed(bot, user_id=101):
+    _say(bot, "/start", user_id=user_id)
+    bot.accounts.agree(user_id)
+
+
+def test_service_voice_is_politely_refused_without_download(world, monkeypatch):
+    """SaluteSpeech на сервере не включаем: голосовое не скачиваем, просим текст."""
+    monkeypatch.setenv("SALUTE_SPEECH_TOKEN", "key-for-test")
+    bot, store, accounts, api = world
+    again = TelegramBot(token=FAKE_TOKEN, store=store, parser=dialog.Parser(),
+                        accounts=accounts, public_url=PUBLIC)
+    assert again.speech is None          # ключ есть, а распознавания нет
+    _agreed(bot)
+    downloads = []
+    bot.download = lambda file_id: downloads.append(file_id) or b""
+    bot.process(_update("", voice={"file_id": "voice-1", "duration": 5}))
+    assert downloads == []
+    assert api.sent(101)[-1]["text"] == telegram.VOICE_TEXT_ONLY
+
+
+class _Speech:
+    def __init__(self):
+        self.heard = []
+
+    def transcribe(self, audio, fmt):
+        self.heard.append(audio)
+        return "Пил кофе, с утра тревога"
+
+
+@pytest.mark.parametrize("voice", [{"file_id": "v", "duration": 600},
+                                   {"file_id": "v", "duration": 5,
+                                    "file_size": telegram.MAX_FILE + 1}])
+def test_long_voice_is_refused_before_download(world, monkeypatch, voice):
+    monkeypatch.setattr(telegram, "SERVICE_VOICE", True)
+    bot, _, _, api = world
+    bot.speech = _Speech()
+    _agreed(bot)
+    downloads = []
+    bot.download = lambda file_id: downloads.append(file_id) or b"ogg"
+    bot.process(_update("", voice=voice))
+    assert downloads == []
+    assert "двух минут" in api.sent(101)[-1]["text"]
+
+
+def test_voice_parse_limit_is_checked_before_download_and_counted_once(world, monkeypatch):
+    monkeypatch.setattr(telegram, "SERVICE_VOICE", True)
+    bot, _, _, api = world
+    bot.speech = _Speech()
+    _agreed(bot)
+    counted = []
+    monkeypatch.setattr(limits, "may_parse", lambda uid: counted.append(uid) or "")
+    downloads = []
+    bot.download = lambda file_id: downloads.append(file_id) or b"ogg"
+    bot.process(_update("", voice={"file_id": "v", "duration": 5}))
+    assert downloads == ["v"] and counted == [101]
+
+    monkeypatch.setattr(limits, "may_parse", lambda uid: "Слишком много сообщений подряд.")
+    bot.process(_update("", voice={"file_id": "v2", "duration": 5}))
+    assert downloads == ["v"]
+    assert "Слишком много" in api.sent(101)[-1]["text"]
+
+
+def test_failed_erase_is_not_reported_as_done(world, monkeypatch):
+    bot, store, accounts, api = world
+    _agreed(bot)
+    _say(bot, "Пил кофе, с утра тревога")
+
+    def broken(db, key):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(store.storage, "drop_everything", broken)
+    _say(bot, "/delete")
+    _say(bot, ERASE_WORD)
+    assert "ничего не удалено" in api.sent(101)[-1]["text"]
+    assert accounts.user(101) is not None          # откатилось целиком
+    assert store.get(user_key(101)).timeline.days

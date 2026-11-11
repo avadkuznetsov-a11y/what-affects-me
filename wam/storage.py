@@ -91,6 +91,12 @@ CREATE TABLE IF NOT EXISTS reminders (
     off     INTEGER NOT NULL DEFAULT 0,
     sent    TEXT NOT NULL DEFAULT ''
 );
+-- Служебные отметки о самой базе, например «старые удалённые страницы уже
+-- затёрты» (см. Storage.scrub_once).
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -171,6 +177,11 @@ class Storage:
         # наследует права базы, отдельно за ним следить не нужно.
         os.chmod(self.path, 0o600)
         db = sqlite3.connect(self.path, check_same_thread=False)
+        # Удалённое затирается нулями, а не только помечается свободным: иначе
+        # стёртый по просьбе человека дневник ещё долго читался бы из файла и
+        # из каждого бэкапа. Настройка живёт в соединении, не в файле, -
+        # поэтому ставим её при каждом открытии.
+        db.execute("PRAGMA secure_delete=ON")
         db.executescript(_SCHEMA)
         _add_missing_columns(db)
         return db
@@ -293,6 +304,37 @@ class Storage:
                     self._db.execute("DELETE FROM diaries WHERE diary=?", (key,))
             except sqlite3.Error as exc:
                 self._failed(exc)
+
+    def drop_everything(self, db: sqlite3.Connection, key: str) -> None:
+        """
+        Удалить дневник и привязанные к нему чаты внутри чужой транзакции
+        (atomic). Ошибку не глотает: удаление человека должно пройти целиком
+        или не пройти и сказать об этом. Звать под atomic() - замок уже взят.
+        """
+        db.execute("DELETE FROM chats WHERE diary=?", (key,))
+        db.execute("DELETE FROM facts WHERE diary=?", (key,))
+        db.execute("DELETE FROM days WHERE diary=?", (key,))
+        db.execute("DELETE FROM diaries WHERE diary=?", (key,))
+        self._days.pop(key, None)
+        self._cities.pop(key, None)
+
+    def scrub_once(self) -> bool:
+        """
+        Один раз переписать файл (VACUUM), чтобы затереть то, что удалили до
+        включения secure_delete: эти страницы лежат в файле как свободные, но
+        с прежним текстом. Отметка в meta - чтобы не переписывать базу при
+        каждом запуске. Отвечает, понадобилось ли.
+        """
+        with self._lock:
+            done = self._db.execute(
+                "SELECT value FROM meta WHERE key='scrubbed'").fetchone()
+            if done:
+                return False
+            self._db.execute("VACUUM")
+            with self._db:
+                self._db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('scrubbed', ?)",
+                                 (str(time.time()),))
+            return True
 
     # ── привязка чатов ────────────────────────────────────────────────────
     def set_chat(self, chat_id: int, key: str) -> None:

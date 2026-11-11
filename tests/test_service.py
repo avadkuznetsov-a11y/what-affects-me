@@ -8,6 +8,8 @@ http.client: так видно каждый заголовок - Host, Origin, C
 """
 import http.client
 import json
+import re
+import sqlite3
 import threading
 import time
 from http.server import ThreadingHTTPServer
@@ -109,6 +111,9 @@ def service(monkeypatch, tmp_path):
     monkeypatch.setattr(server, "SERVICE_BOT", None)
     monkeypatch.setattr(server, "LOGIN_LIMIT", limits.Limiter(10, 60))
     monkeypatch.setattr(server, "WEATHER_LIMIT", limits.Limiter(10, 3600))
+    monkeypatch.setattr(server, "SUMMARY_LIMIT", limits.Limiter(10, 60))
+    monkeypatch.setattr(server, "FOOD_LIMIT", limits.Limiter(10, 60))
+    monkeypatch.setattr(server, "CITY_LIMIT", limits.Limiter(10, 3600))
     # Город проверяется геокодингом, погода - запросом в сеть. В тестах сети
     # нет: город «находится» всегда, погоды нет никогда.
     monkeypatch.setattr(weather, "coords", lambda city: (55.75, 37.62))
@@ -406,7 +411,8 @@ def test_without_consent_the_diary_is_closed(service):
     for path in ("/say", "/summary", "/reset", "/city", "/weather", "/food"):
         code, _, body = alice.post(path, {"text": "Пил кофе"})
         assert code == 403 and json.loads(body)["consent"], path
-    assert alice.get("/export")[0] == 403
+    # Свои записи забрать можно и без согласия - доступ к своим данным
+    assert alice.get("/export")[0] == 200
     assert not service.store.get(user_key(1)).timeline.days
 
 
@@ -702,8 +708,7 @@ def test_policy_lets_in_only_own_code(service):
             assert server._sha(block) in policy
         for handler in server._HANDLER.findall(text):
             assert server._sha(handler) in policy
-    # Страница без шрифтов Google: по CSP их всё равно не пустят, а запрос к
-    # чужому домену отдал бы ему адрес человека
+    # Ни одного адреса чужого сайта для загрузки: шрифты свои
     page = service.request("GET", "/")[2]
     assert "fonts.googleapis" not in page and "fonts.gstatic" not in page
 
@@ -718,10 +723,20 @@ def test_policy_follows_the_bot_name(service, monkeypatch):
     assert server._sha(script) in headers["Content-Security-Policy"]
 
 
-def test_local_mode_page_is_as_before(monkeypatch):
-    """В режиме local страница прежняя: шрифты на месте, заголовков сервиса нет."""
-    monkeypatch.setattr(server, "MODE", "local")
-    assert b"fonts.googleapis" in server.page()
+def test_fonts_are_served_from_own_address(service):
+    """Шрифты страницы - свои файлы, без входа, с кэшем; чужих путей не отдаём."""
+    page = service.request("GET", "/")[2]
+    names = re.findall(r"url\((/fonts/[^)]+\.woff2)\)", page)
+    assert len(names) == 4
+    for name in names:
+        code, headers, _ = service.request("GET", name)
+        assert code == 200 and headers["Content-Type"] == "font/woff2"
+        assert headers["Cache-Control"].startswith("public")
+    for path in ("/fonts/../server.py", "/fonts/OFL-literata.txt", "/fonts/x.woff2"):
+        assert service.request("GET", path)[0] in (401, 404)
+    # Лицензия OFL лежит рядом с каждым шрифтом
+    for family in ("golos-text", "literata"):
+        assert "Open Font License" in (server.FONTS_DIR / f"OFL-{family}.txt").read_text()
 
 
 def test_stop_saves_diaries_and_releases_the_bot(tmp_path, monkeypatch):
@@ -747,3 +762,214 @@ def test_stop_saves_diaries_and_releases_the_bot(tmp_path, monkeypatch):
     assert server.STOP.is_set() and halted == [True]
     again = DiaryStore(tmp_path / "mira.db")
     assert again.get(user_key(1)).timeline.days
+
+
+# ── находки аудита ────────────────────────────────────────────────────────
+
+def test_deleted_rows_are_wiped_from_the_file(tmp_path):
+    """secure_delete: удалённый текст не остаётся в файле свободными страницами."""
+    store = DiaryStore(tmp_path / "mira.db")
+    accounts = Accounts(store.storage)
+    accounts.enroll(1)
+    accounts.agree(1)
+    diary = store.get(user_key(1))
+    diary.add(dialog.Parser().parse("Пил кофе, сегодня секретслово", diary.today().day))
+    diary.save()
+    assert store.storage._db.execute("PRAGMA secure_delete").fetchone()[0] == 1
+    accounts.erase(1, store)
+    store.close()
+    assert b"\xd1\x81\xd0\xb5\xd0\xba\xd1\x80\xd0\xb5\xd1\x82" not in (tmp_path / "mira.db").read_bytes()
+
+
+def test_old_free_pages_are_scrubbed_once(tmp_path):
+    path = tmp_path / "mira.db"
+    # База от прежней версии: удаляли без secure_delete, текст остался в файле
+    db = sqlite3.connect(path)
+    db.execute("PRAGMA secure_delete=OFF")
+    db.execute("CREATE TABLE junk(t TEXT)")
+    db.execute("INSERT INTO junk VALUES(?)", ("старыйхвост" * 200,))
+    db.commit()
+    db.execute("DELETE FROM junk")
+    db.commit()
+    db.close()
+    assert "старыйхвост".encode() in path.read_bytes()
+    store = DiaryStore(path)
+    assert store.storage.scrub_once() is True
+    assert store.storage.scrub_once() is False        # второй раз не переписываем
+    store.close()
+    assert "старыйхвост".encode() not in path.read_bytes()
+
+
+def test_erase_is_one_transaction_and_failure_is_500(service, monkeypatch):
+    alice = service.person(1)
+    alice.post("/say", {"text": "Пил кофе, с утра тревога"})
+
+    def broken(db, key):
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(service.store.storage, "drop_everything", broken)
+    code, _, body = alice.post("/account/delete", {"confirm": "УДАЛИТЬ"})
+    assert code == 500 and "ничего не удалено" in body
+    # Откатилось целиком: человек, сессия и записи на месте
+    assert service.accounts.user(1) is not None
+    assert "кофе" in alice.get("/export?format=text")[2]
+    monkeypatch.undo()
+
+
+def test_sweep_removes_orphan_diaries_and_unconsented_accounts(service, monkeypatch):
+    monkeypatch.setattr(server, "STORE", service.store)
+    monkeypatch.setattr(server, "ACCOUNTS", service.accounts)
+    alice = service.person(1)
+    alice.post("/say", {"text": "Пил кофе, с утра тревога"})
+    service.person(2, consent=False)
+    # Дневник без хозяина: запись легла в гонке с удалением
+    ghost = service.store.get(user_key(3))
+    ghost.add(dialog.Parser().parse("Пил кофе", ghost.today().day))
+    ghost.save()
+    assert service.accounts.orphans() == [user_key(3)]
+
+    server.sweep_idle()
+    assert service.accounts.orphans() == []
+    assert service.accounts.user(2) is not None      # неделя ещё не прошла
+    week = time.time() + 8 * 24 * 60 * 60
+    server.sweep_idle(now=week)
+    assert service.accounts.user(2) is None
+    assert service.accounts.user(1) is not None      # согласился - не трогаем
+
+
+def test_request_of_a_just_deleted_user_is_401(service):
+    """Сессия пережила человека: запрос в пути не заводит ему новый дневник."""
+    alice = service.person(1)
+    # Учётной записи уже нет, а сессия ещё в базе - удаление «в пути».
+    # /export открыт без согласия, так что до дневника его пускает только
+    # проверка в _user_key.
+    with service.accounts.storage.atomic() as db:
+        db.execute("DELETE FROM users WHERE user_id=1")
+    code, _, _ = alice.get("/export?format=text")
+    assert code == 401
+    assert user_key(1) not in service.accounts.orphans()
+
+
+def test_unexpected_error_is_a_quiet_500(service, monkeypatch, capsys):
+    alice = service.person(1)
+
+    def boom(*args, **kwargs):
+        raise ValueError("Пил кофе, с утра тревога")      # текст человека в ошибке
+
+    monkeypatch.setattr(server, "_say", boom)
+    code, _, body = alice.post("/say", {"text": "Пил кофе"})
+    assert code == 500 and "внутренняя ошибка" in body
+    assert "кофе" not in body
+    out = capsys.readouterr().out
+    assert "ValueError #" in out and "кофе" not in out
+
+
+def test_server_error_log_has_no_text(capsys):
+    httpd = server.Server(("127.0.0.1", 0), server.Handler)
+    try:
+        try:
+            raise RuntimeError("Пил кофе, с утра тревога")
+        except RuntimeError:
+            httpd.handle_error(None, ("127.0.0.1", 1))
+        try:
+            raise BrokenPipeError()
+        except BrokenPipeError:
+            httpd.handle_error(None, ("127.0.0.1", 1))
+    finally:
+        httpd.server_close()
+    out = capsys.readouterr().out
+    assert out.count("RuntimeError #") == 1 and "кофе" not in out
+
+
+def test_deeply_nested_json_is_400(service):
+    alice = service.person(1)
+    code, _, _ = alice.post("/say", b"[" * 60000 + b"]" * 60000)
+    assert code in (400, 413)
+    code, _, _ = alice.post("/say", b'{"text":' + b"[" * 30000 + b"]" * 30000 + b"}")
+    assert code == 400
+
+
+def test_idle_connection_is_closed():
+    assert server.Handler.timeout == 30
+
+
+def test_summary_takes_only_known_periods(service, monkeypatch):
+    asked = []
+    monkeypatch.setattr(server, "_summary_step",
+                        lambda key, days, since=0: asked.append(days) or {"ok": True})
+    alice = service.person(1)
+    for days in (21, 180, 17, 365, 10 ** 9, "90", None):
+        alice.post("/summary", {"days": days})
+    assert asked == [21, 180, server.DEFAULT_DAYS, server.DEFAULT_DAYS,
+                     server.DEFAULT_DAYS, 90, server.DEFAULT_DAYS]
+
+
+@pytest.mark.parametrize("path, body, limit", [
+    ("/summary", {"days": 21}, 10),
+    ("/food", {"калории": 2000}, 10),
+    ("/city", {"city": "Москва"}, 10),
+])
+def test_heavy_requests_are_limited_per_person(service, monkeypatch, path, body, limit):
+    monkeypatch.setattr(server, "_summary_step", lambda *a, **k: {"ok": True})
+    alice, bob = service.person(1), service.person(2)
+    for _ in range(limit):
+        assert alice.post(path, body)[0] == 200
+    code, headers, _ = alice.post(path, body)
+    assert code == 429 and headers.get("Retry-After")
+    assert bob.post(path, body)[0] == 200             # потолок у каждого свой
+
+
+def test_food_takes_only_last_two_years(service):
+    from datetime import date, timedelta
+    alice = service.person(1)
+    today = date.today()
+    rows = ["дата,калории",
+            f"{(today - timedelta(days=10)).isoformat()},2000",
+            f"{(today + timedelta(days=5)).isoformat()},2000",
+            "1900-01-01,2000",
+            f"{(today - timedelta(days=800)).isoformat()},2000"]
+    code, _, body = alice.post("/food", {"csv": "\n".join(rows)})
+    assert code == 200 and json.loads(body)["days"] == 1
+    days = {r.day for r in service.store.get(user_key(1)).timeline.days}
+    assert days == {today - timedelta(days=10)}
+    _, _, body = alice.post("/food", {"csv": "дата,калории\n1900-01-01,2000"})
+    assert "двух лет" in json.loads(body)["error"]
+
+
+def test_food_respects_the_diary_ceiling(service, monkeypatch):
+    from datetime import date, timedelta
+    monkeypatch.setattr(server, "MAX_DIARY_DAYS", 3)
+    alice = service.person(1)
+    today = date.today()
+    rows = ["дата,калории"] + [f"{(today - timedelta(days=i)).isoformat()},2000"
+                               for i in range(5)]
+    _, _, body = alice.post("/food", {"csv": "\n".join(rows)})
+    assert json.loads(body)["ok"] is False
+    assert not service.store.get(user_key(1)).timeline.days
+
+
+def test_export_and_logout_work_without_consent(service):
+    """Свои записи забрать можно и без нового согласия (сменился текст политики)."""
+    alice = service.person(1)
+    alice.post("/say", {"text": "Пил кофе, с утра тревога"})
+    with service.accounts.storage.atomic() as db:
+        db.execute("UPDATE users SET consent_version='старая' WHERE user_id=1")
+    assert alice.post("/say", {"text": "Спал 7 часов"})[0] == 403
+    code, _, body = alice.get("/export?format=text")
+    assert code == 200 and "кофе" in body
+
+
+def test_logout_everywhere_closes_every_session(service):
+    alice = service.person(1)
+    other = Person(service, 1)
+    other.login(service.accounts.issue_login(1))
+    bob = service.person(2)
+    assert alice.post("/auth/logout-all")[0] == 200
+    assert other.get("/state")[0] == 401 and alice.get("/state")[0] == 401
+    assert bob.get("/state")[0] == 200
+
+
+def test_page_says_who_is_logged_in(service):
+    page = service.request("GET", "/")[2]
+    assert 'id="whoami"' in page and "Вы вошли как @" in page
+    assert "Выйти на всех устройствах" in page

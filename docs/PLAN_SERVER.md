@@ -43,19 +43,19 @@
 - **LLM.** На сервере `WAM_ENGINE=yandex`, обязательно заголовок `x-data-logging-enabled: false`; модель из `YANDEX_MODEL` (по умолчанию `yandexgpt-5.1/latest`, `yandexgpt-lite` отключают 15.11.2026). Нет ключа — правила без ИИ. Anthropic и GigaChat на сервере не включать.
 - **Хранилище.** Путь к базе из `MIRA_DB`. Новые таблицы через `CREATE IF NOT EXISTS`: `users`, `sessions`, `login_tokens`, `reminders`. База 600, каталог data 700.
 
-## 5. Деплой (по образцу /opt/vystavochny-bot)
+## 5. Деплой (по образцу выставочного бота)
 - **Dockerfile:** `python:3.14-slim`, только stdlib, `COPY wam bot demo web`, пользователь uid 10001, `CMD python -m web.server`; `.dockerignore`: `.diary.db*`, `.env*`, `tests`, `docs`, `.git`.
 - **docker-compose.yml:** `env_file: .env`, `expose: 8765`, `VIRTUAL_HOST`/`VIRTUAL_PORT`/`LETSENCRYPT_HOST`=mira.ambarik.ru, сеть `samozanyatiy_bot_webnet` (external), `./data:/app/data`, `mem_limit: 384m`, `restart: unless-stopped`, `no-new-privileges`, `cap_drop: ALL`, `read_only` + `tmpfs /tmp`, логи 10m×3.
 - **`/healthz`** без данных.
 - **.env (600)**: `MIRA_MODE`, `MIRA_PUBLIC_HOST`, `MIRA_DB`, `TELEGRAM_TOKEN`, `YANDEX_API_KEY`, `YANDEX_FOLDER_ID`, `YANDEX_MODEL`, `WAM_ENGINE`, `LETSENCRYPT_EMAIL`. В репозиторий только `.env.example` с пустыми значениями — репозиторий публичный.
-- **Бэкап:** `/opt/backups/backup-mira.sh` по образцу `backup-vystavochny.sh` (AES-256 pbkdf2, 14 дней, проверка расшифровки и `integrity_check`, копия на webhost1 `backups/mira/`), cron `50 3 * * *`, ручной запуск перед каждой выкладкой.
-- **Сервер:** `git clone` в `/opt/mira`, `data` chown 10001 chmod 700, записать в `/opt/RUNBOOK.md` и `~/servers.yaml`.
+- **Бэкап:** `tools/backup-mira.sh` в каталоге бэкапов на сервере, по образцу бэкапа выставочного бота (AES-256 pbkdf2, 14 дней, проверка расшифровки и `integrity_check`, копия на второй сервер в `backups/mira/`), cron `50 3 * * *`, ручной запуск перед каждой выкладкой.
+- **Сервер:** `git clone` в каталог сервиса, `data` chown 10001 chmod 700, записать в журнал сервера (RUNBOOK) и в список серверов владельца.
 
 ## 6. Этапы
 
 | № | Этап | Как проверить | Объём |
 |---|------|---------------|-------|
-| 0 | A-запись mira.ambarik.ru → 72.56.34.162, боевой и тестовый бот, решения владельца | `dig` даёт IP | владелец |
+| 0 | A-запись mira.ambarik.ru → IP сервера timeweb, боевой и тестовый бот, решения владельца | `dig` даёт IP | владелец |
 | 1 | Режимы и ключ из запроса: `MIRA_MODE`, `MIRA_DB`, `MIRA_PUBLIC_HOST`; функции получают `key` | 320 тестов зелёные, локальный запуск как раньше | 0,5–1 дн |
 | 2 | Пользователи, сессии, вход, CSRF, 401 без сессии | без cookie 401; чужая cookie не видит чужой дневник; токен одноразовый; чужой Origin 403; без CSRF 403 | 1,5 дн |
 | 3 | Бот сервиса: `/start`→ссылка, автопривязка, без гостевой чистки, `/login`, `/delete`, напоминания в SQLite, логи без текста | тесты на фейковом API Telegram; ручной прогон с тестовым ботом | 1–1,5 дн |

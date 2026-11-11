@@ -51,6 +51,16 @@ from .reminders import DEFAULT_TIME, TEXT as REMINDER, Schedule
 API = "https://api.telegram.org"
 TIMEOUT = 30
 MAX_FILE = 20 * 1024 * 1024      # больше Telegram и не отдаёт, а память не резиновая
+# Голосовое длиннее двух минут - это уже не «пара фраз о дне», а распознавание
+# стоит денег за каждую секунду. Проверяем по тому, что Telegram прислал о
+# файле, до скачивания.
+MAX_VOICE_SECONDS = 120
+
+# Голос в боте сервиса. Выключен: распознавание (SaluteSpeech) - ещё один
+# получатель данных о здоровье, его нет в политике и на него нет согласия.
+# Включать вместе с правкой политики и текста согласия.
+SERVICE_VOICE = False
+VOICE_TEXT_ONLY = "Пока принимаю только текст. Напишите, как прошёл день, парой фраз."
 
 # Токен от @BotFather выглядит всегда одинаково: номер бота, двоеточие, ключ.
 # Проверяем форму до обращения к сети, чтобы не гонять запрос впустую.
@@ -171,6 +181,16 @@ def trace(exc: BaseException) -> str:
     return f"{type(exc).__name__} #{digest}"
 
 
+# Метка внутри сообщения: голосовое уже засчитано в потолок разбора.
+# Telegram таких полей не шлёт - ключ начинается с подчёркивания.
+VOICE_COUNTED = "_voice_counted"
+
+
+def _number(value) -> float:
+    """Число из описания файла от Telegram; чего нет или что не число - ноль."""
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0.0
+
+
 def token_is_shaped_right(token: str) -> bool:
     return bool(TOKEN_SHAPE.fullmatch((token or "").strip()))
 
@@ -190,7 +210,9 @@ class TelegramBot:
         self.store = store or DiaryStore()
         self.parser = parser
         self.timeout = timeout
-        self.speech = SaluteSpeech() if os.environ.get("SALUTE_SPEECH_TOKEN") else None
+        # В боте сервиса голос не распознаём, даже если ключ задан (SERVICE_VOICE)
+        self.speech = (SaluteSpeech() if os.environ.get("SALUTE_SPEECH_TOKEN")
+                       and (accounts is None or SERVICE_VOICE) else None)
         self.accounts = accounts
         self.public_url = public_url.rstrip("/")
         if accounts is not None:
@@ -312,12 +334,23 @@ class TelegramBot:
         return self._as_text(messages)
 
     def handle_voice(self, message: dict) -> str:
-        """Голосовое: скачиваем, распознаём, дальше как обычный текст."""
+        """
+        Голосовое: скачиваем, распознаём, дальше как обычный текст.
+
+        Всё, что можно проверить без файла, проверяем до скачивания: согласие,
+        потолок разбора, длину и размер. Скачанное голосовое - уже данные о
+        человеке у нас в памяти, и тянуть его ради отказа незачем.
+        """
         if self.service:
+            if not SERVICE_VOICE:
+                return VOICE_TEXT_ONLY
             # Голос уходит на распознавание в чужой сервис - это уже обработка.
             # Без согласия не скачиваем и не распознаём ничего.
             refusal = self._gate(message)
             if refusal is not None:
+                return refusal
+            refusal = limits.may_parse(message["chat"]["id"])
+            if refusal:
                 return refusal
         voice = message.get("voice") or message.get("audio") or {}
         file_id = voice.get("file_id")
@@ -326,11 +359,16 @@ class TelegramBot:
         if self.speech is None:
             return ("Распознавание голоса пока не подключено - напишите текстом. "
                     "Для голосовых нужен ключ SaluteSpeech.")
+        if (_number(voice.get("duration")) > MAX_VOICE_SECONDS
+                or _number(voice.get("file_size")) > MAX_FILE):
+            return ("Голосовое длинновато - разберу до двух минут. "
+                    "Расскажите покороче или напишите текстом.")
         audio = self.download(file_id)
         text = transcribe_voice(audio, "ogg", self.speech)
         if not text:
             return "Не разобрал речь. Попробуйте ещё раз или напишите текстом."
-        return self.handle({**message, "text": text})
+        # Потолок разбора уже засчитан выше - второй раз в _serve не считаем
+        return self.handle({**message, "text": text, VOICE_COUNTED: True})
 
     # ── режим server ──────────────────────────────────────────────────────
     def _serve(self, message: dict) -> str:
@@ -361,7 +399,13 @@ class TelegramBot:
                     "Передумали - просто напишите что-нибудь другое.")
         asked = self._erasing.pop(chat_id, None)
         if asked is not None and time.time() - asked <= ERASE_WAIT and text == ERASE_WORD:
-            self.erase(chat_id)
+            try:
+                self.erase(chat_id)
+            except Exception as exc:
+                # Удаление идёт одной транзакцией: упало - не удалено ничего
+                print(f"Удаление не прошло: {trace(exc)}")
+                return ("Удалить не получилось, ничего не удалено. Попробуйте ещё раз "
+                        f"через минуту: /delete, потом слово {ERASE_WORD}.")
             return ("Готово: ваши записи, напоминания и вход на страницу удалены. "
                     "Из резервных копий они уйдут в течение 14 дней. Чтобы начать "
                     "заново, напишите /start.")
@@ -379,7 +423,7 @@ class TelegramBot:
         if not text:
             return "Пока понимаю только текст и голосовые. Напишите пару фраз о дне."
         # Потолок разбора общий со страницей: человек один, бюджет на модель один
-        refusal = limits.may_parse(chat_id)
+        refusal = "" if message.get(VOICE_COUNTED) else limits.may_parse(chat_id)
         if refusal:
             return refusal
 

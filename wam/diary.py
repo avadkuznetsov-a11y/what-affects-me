@@ -20,6 +20,7 @@ Telegram - иначе один медленный ответ сервиса ос
 """
 from __future__ import annotations
 
+import contextlib
 import random
 import re
 import sqlite3
@@ -460,33 +461,43 @@ class DiaryStore:
             if self._storage is not None:
                 self._storage.set_chat(chat_id, key)
 
-    def forget(self, key: str) -> None:
+    def forget(self, key: str, also=None) -> None:
         """
         Стереть дневник совсем: записи, город, привязку чатов и коды. Это
         удаление по просьбе человека, а не уборка - после него от дневника не
         должно остаться ничего ни в памяти, ни в файле.
 
-        Дневник, который кто-то успел взять до удаления, отрезаем от файла:
-        иначе шаг разговора, начатый за секунду до удаления, записал бы день
-        обратно, и удалённое вернулось бы после перезапуска.
+        `also(db)` - что стереть в той же транзакции: учёт людей передаёт сюда
+        удаление учётной записи, сессий и напоминаний. Всё уходит одним
+        коммитом или не уходит вовсе, а ошибка sqlite долетает до вызвавшего:
+        сказать человеку «удалено», когда половина осталась, нельзя.
+
+        Пока идёт удаление, дневник держим под его замком: шаг разговора,
+        начатый за секунду до удаления, дождётся и запишет уже в пустоту -
+        дневник после коммита отрезан от файла. Иначе удалённое вернулось бы
+        после перезапуска.
         """
         with self._lock:
-            diary = self._diaries.pop(key, None)
-            self._guests.pop(key, None)
-            for chat in [chat for chat, value in self._chats.items() if value == key]:
-                del self._chats[chat]
+            diary = self._diaries.get(key)
+            with diary.lock if diary is not None else contextlib.nullcontext():
                 if self._storage is not None:
-                    self._storage.drop_chat(chat)
-            self._codes = {code: value for code, value in self._codes.items()
-                           if value[0] != key}
-            if diary is not None:
-                with diary.lock:
+                    with self._storage.atomic() as db:
+                        if also is not None:
+                            also(db)
+                        self._storage.drop_everything(db, key)
+                # Память чистим только после коммита: упал коммит - человек
+                # остаётся с дневником, а не с половиной.
+                self._diaries.pop(key, None)
+                self._guests.pop(key, None)
+                for chat in [chat for chat, value in self._chats.items() if value == key]:
+                    del self._chats[chat]
+                self._codes = {code: value for code, value in self._codes.items()
+                               if value[0] != key}
+                if diary is not None:
                     diary._storage = None
                     diary.timeline = Timeline()
                     diary.city = ""
                     diary.messages = []
-            if self._storage is not None:
-                self._storage.drop_diary(key)
 
     def close(self) -> None:
         """

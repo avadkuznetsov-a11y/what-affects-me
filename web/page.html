@@ -2,13 +2,24 @@
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Мира - дневник, который ищет причины</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet"
- href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=Literata:opsz,wght@7..72,400;7..72,500&display=swap">
 <style>
- /* Шрифты подгружаются из сети, поэтому у каждого объявления есть запасной
-    стек: без интернета страница должна выглядеть так же, только другим шрифтом. */
+ /* Шрифты лежат рядом с программой (web/fonts, лицензия OFL) и отдаются с
+    нашего же адреса: запрос к чужому сервису шрифтов сообщал бы ему адрес
+    каждого, кто открыл дневник. Кириллица и латиница - отдельными файлами,
+    браузер берёт только нужный. Запасной стек на месте: если файл не пришёл,
+    страница выглядит так же, только другим шрифтом. */
+ @font-face{font-family:"Golos Text";font-style:normal;font-weight:400 900;font-display:swap;
+  src:url(/fonts/golos-text-cyrillic-wght-normal.woff2) format("woff2");
+  unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+ @font-face{font-family:"Golos Text";font-style:normal;font-weight:400 900;font-display:swap;
+  src:url(/fonts/golos-text-latin-wght-normal.woff2) format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
+ @font-face{font-family:Literata;font-style:normal;font-weight:200 900;font-display:swap;
+  src:url(/fonts/literata-cyrillic-wght-normal.woff2) format("woff2");
+  unicode-range:U+0301,U+0400-045F,U+0490-0491,U+04B0-04B1,U+2116}
+ @font-face{font-family:Literata;font-style:normal;font-weight:200 900;font-display:swap;
+  src:url(/fonts/literata-latin-wght-normal.woff2) format("woff2");
+  unicode-range:U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD}
  :root{--ink:#1d2024;--text:#4a5058;--soft:#6a7079;--dim:#82888f;--off:#8d939b;
   --line:#c9ced6;--rule:#d8dce2;--hair:#eef0f3;--accent:#3d4f7c;--accent-dark:#2b3a5e;
   --bg:#fff;--sheet:#eceef1;--head:#f6f7f9;--bubble:#f2f4f6;--bubble-line:#e0e4e9;
@@ -27,6 +38,7 @@
  .top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;padding:20px 24px 0}
  .brand{font-size:21px;font-weight:600;letter-spacing:-.01em}
  .tagline{color:var(--soft);font-size:14px}
+ .whoami{margin-left:auto;color:var(--soft);font-size:13px}
 
  .grid{flex:1;min-height:0;width:100%;max-width:1280px;margin:0 auto;
   display:grid;grid-template-columns:minmax(0,1fr) 396px;gap:18px;padding:18px 24px 24px}
@@ -255,6 +267,9 @@
 <header class="top">
   <div class="brand">Мира</div>
   <div class="tagline">дневник, который ищет причины</div>
+  <!-- Режим server: чей дневник открыт. На общем компьютере это первое,
+       что надо видеть, - иначе легко писать в чужой. -->
+  <div class="whoami" id="whoami" hidden></div>
 </header>
 
 <!-- Режим server: пока человек не вошёл, вместо дневника этот блок. В режиме
@@ -421,7 +436,8 @@
                  placeholder="УДАЛИТЬ"></div>
           <div class="row"><button class="small ghost" onclick="eraseAll()">Удалить всё</button></div>
         </details>
-        <div class="row"><button class="small ghost" onclick="logout()">Выйти</button></div>
+        <div class="row"><button class="small ghost" onclick="logout()">Выйти</button>
+          <button class="small ghost" onclick="logout(true)">Выйти на всех устройствах</button></div>
         <p class="hint"><a href="/privacy" target="_blank" rel="noopener">Как мы обращаемся
           с данными</a></p>
         <p class="warn" id="account-error" hidden></p>
@@ -1006,6 +1022,9 @@ function drawAccount(state){
   hideGate();
   const name = (state.account || {}).username;
   document.getElementById('account-name').textContent = name ? ': @' + name : '';
+  const who = document.getElementById('whoami');
+  who.textContent = name ? 'Вы вошли как @' + name : 'Вы вошли через Telegram';
+  who.hidden = false;
   if(!serverDrawn){
     serverDrawn = true;
     // Панель своего бота и код привязки - режим local. На сервере бот один,
@@ -1038,8 +1057,11 @@ async function agree(){
   poll();
 }
 
-async function logout(){
-  try { await talk('/auth/logout', {}); } catch(e) { /* сессии уже нет - и так вышли */ }
+// everywhere - закрыть все сессии человека: забытый вход на чужом компьютере
+// иначе живёт ещё месяц.
+async function logout(everywhere){
+  try { await talk(everywhere ? '/auth/logout-all' : '/auth/logout', {}); }
+  catch(e) { /* сессии уже нет - и так вышли */ }
   location.replace('/');
 }
 
